@@ -16,7 +16,7 @@ import {
   Tooltip,
 } from '@lec-space/liquidglass';
 import { ArrowLeft, ArrowRight, BookOpen, Copy, ExternalLink, House, Pencil, Plus, RefreshCw, RotateCcw, Trash2, Users } from '@lec-space/icons';
-import { parseBlogUrl } from '@shared/blogUrl';
+import { parseBlogUrl, resolveBlogWriteUrl } from '@shared/blogUrl';
 import { blogApi, hasBlogDevCaptain, hasBlogDevIdentity, type MemberBlogItem } from '@/services/blogApi';
 import { getOrbitClient, isDesktopRuntime } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
@@ -64,6 +64,7 @@ export function BlogHubPage(): JSX.Element {
   const [hideTarget, setHideTarget] = useState<MemberBlogItem | null>(null);
   const [hiding, setHiding] = useState(false);
   const [hideError, setHideError] = useState<string | null>(null);
+  const [blogPublicUrl, setBlogPublicUrl] = useState<string | null>(null);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const desktop = isDesktopRuntime();
@@ -77,7 +78,15 @@ export function BlogHubPage(): JSX.Element {
   useBlogOverlay(hideTarget !== null);
 
   useEffect(() => {
-    if (canAccess) void refreshMemberBlogs();
+    if (!canAccess) return;
+    void refreshMemberBlogs();
+    const controller = new AbortController();
+    void blogApi.getPublicConfig(controller.signal)
+      .then((config) => {
+        if (!controller.signal.aborted) setBlogPublicUrl(config.publicUrl);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
   }, [canAccess, auth.profile?.subject, refreshMemberBlogs]);
 
   useEffect(() => {
@@ -130,6 +139,8 @@ export function BlogHubPage(): JSX.Element {
     (!term || [member.displayName, member.username, member.blogTitle, member.bio].some((value) => value.toLocaleLowerCase().includes(term))),
   );
   const ownBlogPresent = Boolean(myBlog || memberBlogs.some((member) => member.userId === auth.profile?.subject));
+  const ownHosted = myBlog?.blogMode === 'HOSTED' && myBlog.status !== 'HIDDEN';
+  const writeUrl = ownHosted ? resolveBlogWriteUrl(blogPublicUrl, myBlog.blogUrl) : null;
 
   function readPost(userId: string, url: string): void {
     setPostsAuthor(null);
@@ -188,9 +199,15 @@ export function BlogHubPage(): JSX.Element {
                 下架管理
               </Button>
             )}
+            {writeUrl && (
+              <Button variant="glass" size="small" icon={<ExternalLink size={14} />}
+                onClick={() => void orbit.system.openExternal(writeUrl.href).catch(viewError)}>
+                写文章
+              </Button>
+            )}
             <Button variant="filled" size="small" icon={ownBlogPresent ? <Pencil size={15} /> : <Plus size={15} />}
               onClick={() => setConfigOpen(true)}>
-              {ownBlogPresent ? '编辑我的博客' : '绑定我的博客'}
+              {ownBlogPresent ? '编辑我的博客' : '开通 / 绑定博客'}
             </Button>
           </div>
         )}
@@ -299,7 +316,7 @@ export function BlogHubPage(): JSX.Element {
                   </div>
 
                   <ToolbarGroup className={styles.browserActions}>
-                    {selected && (selected.rssUrl || selected.latestPostAt) && (
+                    {selected && (selected.rssUrl || selected.latestPostAt || selected.blogMode === 'HOSTED') && (
                       <Button size="small" icon={<BookOpen size={15} />} onClick={() => setPostsAuthor(selected)}>Ta 的文章</Button>
                     )}
                     <Button size="small" aria-label="复制当前链接" title="复制当前链接" disabled={!current}

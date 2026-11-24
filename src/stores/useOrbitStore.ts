@@ -846,12 +846,20 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         orbitServerOnline: true,
         orbitNotifications: [notif, ...s.orbitNotifications.filter((n) => n.id !== notif.id)],
       }));
+      const isBlogEvent = notif.sourceApp === 'lec-blog';
+      if (isBlogEvent && get().auth.authenticated && (get().activeTab === 'blogs' || get().memberBlogs.length > 0)) {
+        void get().refreshMemberBlogs();
+      }
+      const blogTargetUrl = isBlogEvent ? parseBlogUrl(notif.payload?.postUrl ?? notif.payload?.blogUrl) : null;
+      const blogAuthorId = typeof notif.payload?.userId === 'string' ? notif.payload.userId.trim() : '';
       void getOrbitClient().system.notify(notif.title, notif.body);
       notifyToast({
         tone: notif.eventType === 'doc.edit_request' ? 'info' : 'success',
         title: notif.title,
         description: notif.body,
-        action: { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
+        action: blogTargetUrl && blogAuthorId
+          ? { label: '前往阅读', onClick: () => get().openBlogTarget(blogAuthorId, blogTargetUrl.href) }
+          : { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
       });
       return;
     }

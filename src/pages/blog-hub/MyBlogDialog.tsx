@@ -1,14 +1,27 @@
 import { useEffect, useId, useState, type FormEvent, type JSX } from 'react';
-import { Button, Dialog, FormField, Input, Message, Skeleton, Switch, Tag, TextArea } from '@lec-space/liquidglass';
+import {
+  Button,
+  Dialog,
+  FormField,
+  Input,
+  Message,
+  SegmentedControl,
+  Skeleton,
+  Switch,
+  Tag,
+  TextArea,
+} from '@lec-space/liquidglass';
 import { RefreshCw, Trash2 } from '@lec-space/icons';
-import { parseBlogUrl } from '@shared/blogUrl';
-import { blogApi, BlogApiError } from '@/services/blogApi';
+import { parseBlogUrl, resolveBlogWriteUrl, validateHostedSlug } from '@shared/blogUrl';
+import { blogApi, BlogApiError, type BlogMode } from '@/services/blogApi';
+import { getOrbitClient } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
 import { useOrbitStore } from '@/stores/useOrbitStore';
 import { useBlogOverlay } from './useBlogOverlay';
 import styles from './BlogHub.module.css';
 
 interface MyBlogForm {
+  hostedSlug: string;
   blogUrl: string;
   blogTitle: string;
   bio: string;
@@ -17,7 +30,20 @@ interface MyBlogForm {
   autoDiscoverRss: boolean;
 }
 
-const EMPTY_FORM: MyBlogForm = { blogUrl: '', blogTitle: '', bio: '', tags: [], rssUrl: '', autoDiscoverRss: true };
+const MODE_OPTIONS = [
+  { value: 'HOSTED', label: '工作室托管' },
+  { value: 'EXTERNAL', label: '绑定外部博客' },
+];
+
+const EMPTY_FORM: MyBlogForm = {
+  hostedSlug: '',
+  blogUrl: '',
+  blogTitle: '',
+  bio: '',
+  tags: [],
+  rssUrl: '',
+  autoDiscoverRss: true,
+};
 
 export function MyBlogDialog({ open, onOpenChange }: {
   open: boolean;
@@ -28,6 +54,8 @@ export function MyBlogDialog({ open, onOpenChange }: {
   const refreshMemberBlogs = useOrbitStore((state) => state.refreshMemberBlogs);
   const clearBlogTarget = useOrbitStore((state) => state.clearBlogTarget);
   const formId = useId();
+  const [mode, setMode] = useState<BlogMode>('HOSTED');
+  const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [form, setForm] = useState<MyBlogForm>(EMPTY_FORM);
   const [tag, setTag] = useState('');
   const [tagError, setTagError] = useState<string | null>(null);
@@ -52,18 +80,30 @@ export function MyBlogDialog({ open, onOpenChange }: {
     setTagError(null);
     setConfirmDelete(false);
 
-    void blogApi.getMyBlog(controller.signal)
-      .then((detail) => {
+    void Promise.all([
+      blogApi.getMyBlog(controller.signal),
+      blogApi.getPublicConfig(controller.signal).catch(() => null),
+    ])
+      .then(([detail, config]) => {
         if (controller.signal.aborted) return;
         setMyBlog(detail);
-        setForm(detail ? {
-          blogUrl: detail.blogUrl,
-          blogTitle: detail.blogTitle,
-          bio: detail.bio,
-          tags: detail.tags,
-          rssUrl: detail.rssUrl ?? '',
-          autoDiscoverRss: !detail.rssUrl,
-        } : EMPTY_FORM);
+        setPublicUrl(config?.publicUrl ?? null);
+        if (detail) {
+          const currentMode: BlogMode = detail.blogMode === 'HOSTED' ? 'HOSTED' : 'EXTERNAL';
+          setMode(currentMode);
+          setForm({
+            hostedSlug: detail.hostedSlug ?? '',
+            blogUrl: currentMode === 'EXTERNAL' ? detail.blogUrl : '',
+            blogTitle: detail.blogTitle,
+            bio: detail.bio,
+            tags: detail.tags,
+            rssUrl: detail.rssUrl ?? '',
+            autoDiscoverRss: !detail.rssUrl,
+          });
+        } else {
+          setMode(config ? 'HOSTED' : 'EXTERNAL');
+          setForm(EMPTY_FORM);
+        }
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -93,20 +133,67 @@ export function MyBlogDialog({ open, onOpenChange }: {
 
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (myBlog?.status === 'HIDDEN') return;
+    if (!addTag()) return;
+    const tagToSave = tag.trim();
+    const tags = tagToSave && !form.tags.includes(tagToSave) ? [...form.tags, tagToSave] : form.tags;
+
+    if (mode === 'HOSTED') {
+      const slug = form.hostedSlug.trim().toLowerCase();
+      const slugError = validateHostedSlug(slug);
+      if (slugError) {
+        setError(slugError);
+        return;
+      }
+      const wasHosted = myBlog?.blogMode === 'HOSTED';
+      setBusy('save');
+      setError(null);
+      setWarning(null);
+      try {
+        const saved = await blogApi.enableHostedBlog({
+          hostedSlug: slug,
+          blogTitle: form.blogTitle,
+          bio: form.bio,
+          tags,
+        });
+        setMyBlog(saved);
+        const writeUrl = resolveBlogWriteUrl(publicUrl, saved.blogUrl);
+        notifyToast({
+          tone: 'success',
+          title: wasHosted ? '托管博客已更新' : '工作室博客已开通',
+          description: wasHosted ? undefined : '现在可以打开 Markdown 写作台发布第一篇文章。',
+          action: !wasHosted && writeUrl
+            ? { label: '去写文章', onClick: () => void getOrbitClient().system.openExternal(writeUrl.href) }
+            : undefined,
+        });
+        onOpenChange(false);
+        void refreshMemberBlogs();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '无法开通或保存托管博客');
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
     const blogUrl = parseBlogUrl(form.blogUrl);
     const rssUrl = form.rssUrl.trim();
     if (!blogUrl || (rssUrl && !parseBlogUrl(rssUrl))) {
       setError('博客主页和订阅地址需要填写有效的 HTTP 或 HTTPS 地址。');
       return;
     }
-    if (!addTag()) return;
-    const tagToSave = tag.trim();
-    const tags = tagToSave && !form.tags.includes(tagToSave) ? [...form.tags, tagToSave] : form.tags;
     setBusy('save');
     setError(null);
     setWarning(null);
     try {
-      setMyBlog(await blogApi.upsertMyBlog({ ...form, blogUrl: blogUrl.href, rssUrl, tags }));
+      setMyBlog(await blogApi.upsertMyBlog({
+        blogUrl: blogUrl.href,
+        blogTitle: form.blogTitle,
+        bio: form.bio,
+        tags,
+        rssUrl,
+        autoDiscoverRss: form.autoDiscoverRss,
+      }));
       notifyToast({ tone: 'success', title: '博客已保存' });
       onOpenChange(false);
       void refreshMemberBlogs();
@@ -161,11 +248,14 @@ export function MyBlogDialog({ open, onOpenChange }: {
 
   const hidden = myBlog?.status === 'HIDDEN';
   const fieldsDisabled = Boolean(busy) || hidden;
+  const hostedBase = (parseBlogUrl(publicUrl)?.href.replace(/\/+$/, '') ?? 'https://blog.lecspace.top');
+  const submitLabel = mode === 'HOSTED' && myBlog?.blogMode !== 'HOSTED' ? '开通博客' : '保存';
+
   return (
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={myBlog ? '编辑我的博客' : '绑定我的博客'}
+      title={myBlog ? '编辑我的博客' : '开通 / 绑定博客'}
       size="regular"
       dismissible={!busy}
       footer={
@@ -193,7 +283,7 @@ export function MyBlogDialog({ open, onOpenChange }: {
               disabled={hidden || loading || Boolean(loadError) || Boolean(busy)}
               loading={busy === 'save'}
             >
-              保存
+              {submitLabel}
             </Button>
           </div>
         </div>
@@ -212,10 +302,42 @@ export function MyBlogDialog({ open, onOpenChange }: {
       ) : (
         <form id={formId} className={styles.form} onSubmit={(event) => void save(event)}>
           {hidden && <Message className={styles.warning}>博客已被队长下架，当前无法修改、同步或解绑，请联系队长恢复。</Message>}
-          <FormField label="博客主页 URL" required disabled={fieldsDisabled}>
-            {(props) => <Input {...props} type="url" maxLength={512} variant="fill" value={form.blogUrl}
-              onValueChange={(blogUrl) => setForm({ ...form, blogUrl })} placeholder="https://example.com" />}
-          </FormField>
+          <SegmentedControl
+            className={styles.modeSwitch}
+            aria-label="博客模式"
+            items={MODE_OPTIONS}
+            value={mode}
+            onValueChange={(value) => {
+              if (fieldsDisabled) return;
+              setMode(value === 'HOSTED' ? 'HOSTED' : 'EXTERNAL');
+              setError(null);
+            }}
+          />
+          {mode === 'HOSTED' ? (
+            <>
+              {myBlog?.blogMode === 'EXTERNAL' && (
+                <Message>切换为工作室托管后将停止外部 RSS 同步，你可以直接在工作室 Markdown 写作台发文。</Message>
+              )}
+              <FormField
+                label="博客短链"
+                description={`${hostedBase}/u/ · 留空自动按用户名生成`}
+                disabled={fieldsDisabled}
+              >
+                {(props) => <Input {...props} maxLength={32} variant="fill" value={form.hostedSlug}
+                  onValueChange={(hostedSlug) => setForm({ ...form, hostedSlug })} placeholder="例如 alice" />}
+              </FormField>
+            </>
+          ) : (
+            <>
+              {myBlog?.blogMode === 'HOSTED' && (
+                <Message className={styles.warning}>切换为外部博客后托管主页会暂下线，已有原生文章与草稿会保留，随时可切回恢复。</Message>
+              )}
+              <FormField label="博客主页 URL" required disabled={fieldsDisabled}>
+                {(props) => <Input {...props} type="url" maxLength={512} variant="fill" value={form.blogUrl}
+                  onValueChange={(blogUrl) => setForm({ ...form, blogUrl })} placeholder="https://example.com" />}
+              </FormField>
+            </>
+          )}
           <FormField label="博客名称" disabled={fieldsDisabled}>
             {(props) => <Input {...props} maxLength={128} variant="fill" value={form.blogTitle}
               onValueChange={(blogTitle) => setForm({ ...form, blogTitle })} />}
@@ -246,25 +368,35 @@ export function MyBlogDialog({ open, onOpenChange }: {
               </div>
             )}
           </FormField>
-          <FormField label="RSS / Atom 地址" disabled={fieldsDisabled}>
-            {(props) => <Input {...props} type="url" maxLength={512} variant="fill" value={form.rssUrl}
-              onValueChange={(rssUrl) => setForm({ ...form, rssUrl })} />}
-          </FormField>
-          <FormField label="未填订阅地址时自动探测首页" disabled={fieldsDisabled || Boolean(form.rssUrl.trim())}>
-            {(props) => <Switch {...props} checked={form.autoDiscoverRss}
-              onCheckedChange={(autoDiscoverRss) => setForm({ ...form, autoDiscoverRss })} />}
-          </FormField>
-          {myBlog?.rssUrl && (
-            <div className={styles.syncBox}>
-              <span>上次同步 {myBlog.lastSyncedAt ? new Date(myBlog.lastSyncedAt).toLocaleString('zh-CN') : '尚未同步'}</span>
-              <Button variant="glass" size="small" icon={<RefreshCw size={14} />} disabled={hidden || Boolean(busy)}
-                loading={busy === 'sync'} onClick={() => void syncNow()}>
-                立即同步文章
-              </Button>
-              {myBlog.syncError && <Message className={styles.warning}>{myBlog.syncError}</Message>}
-            </div>
+          {mode === 'EXTERNAL' && (
+            <>
+              <FormField label="RSS / Atom 地址" disabled={fieldsDisabled}>
+                {(props) => <Input {...props} type="url" maxLength={512} variant="fill" value={form.rssUrl}
+                  onValueChange={(rssUrl) => setForm({ ...form, rssUrl })} />}
+              </FormField>
+              <FormField label="未填订阅地址时自动探测首页" disabled={fieldsDisabled || Boolean(form.rssUrl.trim())}>
+                {(props) => <Switch {...props} checked={form.autoDiscoverRss}
+                  onCheckedChange={(autoDiscoverRss) => setForm({ ...form, autoDiscoverRss })} />}
+              </FormField>
+              {myBlog?.blogMode !== 'HOSTED' && myBlog?.rssUrl && (
+                <div className={styles.syncBox}>
+                  <span>上次同步 {myBlog.lastSyncedAt ? new Date(myBlog.lastSyncedAt).toLocaleString('zh-CN') : '尚未同步'}</span>
+                  <Button variant="glass" size="small" icon={<RefreshCw size={14} />} disabled={hidden || Boolean(busy)}
+                    loading={busy === 'sync'} onClick={() => void syncNow()}>
+                    立即同步文章
+                  </Button>
+                  {myBlog.syncError && <Message className={styles.warning}>{myBlog.syncError}</Message>}
+                </div>
+              )}
+            </>
           )}
-          {confirmDelete && <Message className={styles.warning}>解绑会清理已同步的文章。再次点击「确认解绑」继续。</Message>}
+          {confirmDelete && (
+            <Message className={styles.warning}>
+              {myBlog?.blogMode === 'HOSTED'
+                ? '解绑后托管主页将从目录中下线，已创作的原生文章会保留。再次点击「确认解绑」继续。'
+                : '解绑会清理已同步的文章。再次点击「确认解绑」继续。'}
+            </Message>
+          )}
           {warning && <Message className={styles.warning}>{warning}</Message>}
           {error && <Message tone="error">{error}</Message>}
         </form>

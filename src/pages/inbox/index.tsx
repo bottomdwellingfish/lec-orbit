@@ -725,7 +725,7 @@ export function InboxPage(): JSX.Element {
                   const isDocRequest = item.eventType === 'doc.edit_request';
                   const pageUrl =
                     typeof item.payload?.pageUrl === 'string' ? item.payload.pageUrl : undefined;
-                  const blogUrl = item.sourceApp === 'lec-blog' ? parseBlogUrl(item.payload?.postUrl) : null;
+                  const blogUrl = item.sourceApp === 'lec-blog' ? parseBlogUrl(item.payload?.postUrl ?? item.payload?.blogUrl) : null;
                   const authorId = typeof item.payload?.userId === 'string' ? item.payload.userId : '';
                   const visual = resolveSourceVisual(item.sourceApp);
                   const release = parseNotificationReleaseDetail(item, orbitNotifications);

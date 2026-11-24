@@ -9,6 +9,8 @@ export interface BlogApiEnvelope<T> {
   timestamp: string;
 }
 
+export type BlogMode = 'EXTERNAL' | 'HOSTED';
+
 export interface MemberBlogItem {
   userId: string;
   username: string;
@@ -25,6 +27,8 @@ export interface MemberBlogItem {
   latestPostUrl: string | null;
   latestPostAt: string | null;
   updatedAt: string;
+  blogMode?: BlogMode;
+  hostedSlug?: string | null;
 }
 
 export interface MyBlogDetail extends MemberBlogItem {
@@ -40,6 +44,22 @@ export interface UpsertMyBlogPayload {
   tags?: string[];
   rssUrl?: string;
   autoDiscoverRss?: boolean;
+}
+
+export interface EnableHostedBlogPayload {
+  hostedSlug?: string;
+  blogTitle?: string;
+  bio?: string;
+  tags?: string[];
+}
+
+export interface BlogPublicConfig {
+  issuer: string;
+  orgId: string;
+  webClientId: string;
+  publicUrl: string;
+  mockEnabled: boolean;
+  imageUploadEnabled: boolean;
 }
 
 export interface BlogPostItem {
@@ -117,7 +137,7 @@ client.interceptors.request.use(async (config) => {
 
 async function request<T>(method: 'GET' | 'PUT' | 'DELETE' | 'POST', url: string, options: {
   params?: Record<string, unknown>;
-  data?: UpsertMyBlogPayload;
+  data?: UpsertMyBlogPayload | EnableHostedBlogPayload;
   signal?: AbortSignal;
 } = {}): Promise<T> {
   try {
@@ -132,6 +152,9 @@ async function request<T>(method: 'GET' | 'PUT' | 'DELETE' | 'POST', url: string
 }
 
 export const blogApi = {
+  getPublicConfig(signal?: AbortSignal): Promise<BlogPublicConfig> {
+    return request('GET', '/api/v1/public/config', { signal });
+  },
   listBlogs(params?: { q?: string; tag?: string; sort?: 'recent' | 'updated' }): Promise<MemberBlogItem[]> {
     return request('GET', '/api/v1/blogs', { params });
   },
@@ -140,6 +163,9 @@ export const blogApi = {
   },
   upsertMyBlog(data: UpsertMyBlogPayload): Promise<MyBlogDetail> {
     return request('PUT', '/api/v1/blogs/me', { data });
+  },
+  enableHostedBlog(data: EnableHostedBlogPayload): Promise<MyBlogDetail> {
+    return request('POST', '/api/v1/blogs/me/enable-hosted', { data });
   },
   deleteMyBlog(): Promise<null> {
     return request('DELETE', '/api/v1/blogs/me');
