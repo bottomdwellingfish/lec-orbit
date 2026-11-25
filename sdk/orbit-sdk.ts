@@ -1,11 +1,79 @@
 /**
- * @lec-space/orbit-sdk（v1.0.0）
+ * @lec-space/orbit-sdk（v1.1.0）
  * 面向 Orbit 工坊小程序（React/Vue/Vanilla）与 Cocos Creator 3.x 的标准 TypeScript SDK。
  * 在 Orbit 容器外（例如普通浏览器预览）自动提供本地 localStorage 降级实现。
  */
 
 export type OrbitTheme = 'light' | 'dark';
 export type OrbitDisplayMode = 'sidepanel' | 'workspace' | 'standalone';
+export type OrbitEconomyAsset = 'coin' | 'punch_minutes';
+
+export interface OrbitWalletSummary {
+  coinBalance: number;
+  frozenCoins: number;
+  lifetimeEarnedCoins: number;
+  weeklyRecordedMinutes: number;
+  weeklyTradeMinutes: number;
+  punchAffectsAssessment: boolean;
+  quotas: {
+    maxCoinPerOrder: number;
+    maxPunchPerOrder: number;
+    dailyCoinRemaining: number;
+    weeklyCoinGainRemaining: number;
+    weeklyPunchGainRemaining: number;
+    weeklyPunchLossRemaining: number;
+    activeOrdersCount: number;
+    maxActiveOrders: number;
+  };
+}
+
+export interface OrbitWagerCreateInput {
+  asset: OrbitEconomyAsset;
+  amount: number;
+  matchId: string;
+  opponentUserId?: string;
+  title: string;
+  acceptTimeoutSeconds?: number;
+}
+
+export interface OrbitTipInput {
+  toUserId: string;
+  amount: number;
+  note: string;
+}
+
+export interface OrbitOrderTicket {
+  orderId: string;
+  appId: string;
+  orderType: string;
+  matchId: string;
+  title: string;
+  asset: OrbitEconomyAsset;
+  amount: number;
+  weekKey: string;
+  status: 'pending_accept' | 'locked' | 'settled' | 'refunded' | 'cancelled' | 'expired';
+  creatorUserId: string;
+  opponentUserId?: string;
+  winnerUserId?: string;
+  loserUserId?: string;
+  summary?: string;
+  acceptExpiresAt: number;
+  settleExpiresAt?: number;
+  settledAt?: number;
+  createdAt: number;
+}
+
+export interface OrbitEconomyAPI {
+  readonly isNative?: boolean;
+  getWallet: () => Promise<OrbitWalletSummary>;
+  wager: {
+    create: (input: OrbitWagerCreateInput) => Promise<OrbitOrderTicket>;
+    accept: (orderId: string) => Promise<OrbitOrderTicket>;
+    cancel: (orderId: string) => Promise<void>;
+    get: (orderId: string) => Promise<OrbitOrderTicket>;
+  };
+  tip: (input: OrbitTipInput) => Promise<OrbitOrderTicket>;
+}
 
 export interface OrbitUserProfile {
   userId: string;
@@ -27,7 +95,7 @@ export interface OrbitEnvInfo {
 }
 
 export interface OrbitSDK {
-  sdkVersion: '1.0.0';
+  sdkVersion: '1.1.0' | '1.0.0';
   isOrbit: boolean;
   env: {
     getInfo: () => Promise<OrbitEnvInfo>;
@@ -55,6 +123,7 @@ export interface OrbitSDK {
     onPause: (listener: () => void) => () => void;
     onResume: (listener: () => void) => () => void;
   };
+  economy?: OrbitEconomyAPI;
 }
 
 declare global {
@@ -73,7 +142,7 @@ function createBrowserFallbackSDK(): OrbitSDK {
       : 'light';
 
   return {
-    sdkVersion: '1.0.0',
+    sdkVersion: '1.1.0',
     isOrbit: false,
     env: {
       getInfo: async () => ({
@@ -145,6 +214,91 @@ function createBrowserFallbackSDK(): OrbitSDK {
     lifecycle: {
       onPause: () => () => undefined,
       onResume: () => () => undefined,
+    },
+    economy: {
+      isNative: false,
+      getWallet: async () => ({
+        coinBalance: 500,
+        frozenCoins: 0,
+        lifetimeEarnedCoins: 500,
+        weeklyRecordedMinutes: 180,
+        weeklyTradeMinutes: 0,
+        punchAffectsAssessment: true,
+        quotas: {
+          maxCoinPerOrder: 50,
+          maxPunchPerOrder: 30,
+          dailyCoinRemaining: 200,
+          weeklyCoinGainRemaining: 500,
+          weeklyPunchGainRemaining: 60,
+          weeklyPunchLossRemaining: 60,
+          activeOrdersCount: 0,
+          maxActiveOrders: 3,
+        },
+      }),
+      wager: {
+        create: async (input) => ({
+          orderId: `dev-order-${Date.now().toString(36)}`,
+          appId: 'browser-dev',
+          orderType: 'escrow_wager',
+          matchId: input.matchId,
+          title: input.title,
+          asset: input.asset,
+          amount: input.amount,
+          weekKey: '2026-11-23',
+          status: 'pending_accept',
+          creatorUserId: 'dev-local-user',
+          opponentUserId: input.opponentUserId,
+          acceptExpiresAt: Date.now() + 30 * 60 * 1000,
+          createdAt: Date.now(),
+        }),
+        accept: async (orderId) => ({
+          orderId,
+          appId: 'browser-dev',
+          orderType: 'escrow_wager',
+          matchId: 'dev-match',
+          title: '本地预览对局',
+          asset: 'coin',
+          amount: 10,
+          weekKey: '2026-11-23',
+          status: 'locked',
+          creatorUserId: 'dev-opponent',
+          opponentUserId: 'dev-local-user',
+          acceptExpiresAt: Date.now() + 30 * 60 * 1000,
+          settleExpiresAt: Date.now() + 4 * 60 * 60 * 1000,
+          createdAt: Date.now(),
+        }),
+        cancel: async () => undefined,
+        get: async (orderId) => ({
+          orderId,
+          appId: 'browser-dev',
+          orderType: 'escrow_wager',
+          matchId: 'dev-match',
+          title: '本地预览对局',
+          asset: 'coin',
+          amount: 10,
+          weekKey: '2026-11-23',
+          status: 'pending_accept',
+          creatorUserId: 'dev-local-user',
+          acceptExpiresAt: Date.now() + 30 * 60 * 1000,
+          createdAt: Date.now(),
+        }),
+      },
+      tip: async (input) => ({
+        orderId: `dev-tip-${Date.now().toString(36)}`,
+        appId: 'browser-dev',
+        orderType: 'p2p_tip',
+        matchId: '',
+        title: input.note,
+        asset: 'coin',
+        amount: input.amount,
+        weekKey: '2026-11-23',
+        status: 'settled',
+        creatorUserId: 'dev-local-user',
+        opponentUserId: input.toUserId,
+        acceptExpiresAt: Date.now(),
+        settledAt: Date.now(),
+        createdAt: Date.now(),
+      }),
     },
   };
 }

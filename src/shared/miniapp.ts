@@ -17,8 +17,38 @@ export const MiniAppPermissionScopeSchema = z.enum([
   'user.profile',
   'storage.cloud',
   'clipboard',
+  'economy.read',
+  'economy.wager.coin',
+  'economy.wager.punch',
+  'economy.tip',
 ]);
 export type MiniAppPermissionScope = z.infer<typeof MiniAppPermissionScopeSchema>;
+
+/** 极简双资产枚举：coin（乐币）与 punch_minutes（本周打卡时长）。 */
+export const MiniAppEconomyAssetSchema = z.enum(['coin', 'punch_minutes']);
+export type MiniAppEconomyAsset = z.infer<typeof MiniAppEconomyAssetSchema>;
+
+export const MINIAPP_ECONOMY_LIMITS: Record<MiniAppEconomyAsset, number> = {
+  coin: 50,
+  punch_minutes: 30,
+};
+
+export const MiniAppWagerCreateInputSchema = z.object({
+  asset: MiniAppEconomyAssetSchema,
+  amount: z.number().int().min(1).max(60),
+  matchId: z.string().trim().min(1).max(64),
+  opponentUserId: z.string().trim().min(1).max(64).optional(),
+  title: z.string().trim().min(1).max(64),
+  acceptTimeoutSeconds: z.number().int().min(60).max(7200).optional(),
+});
+export type MiniAppWagerCreateInput = z.infer<typeof MiniAppWagerCreateInputSchema>;
+
+export const MiniAppTipInputSchema = z.object({
+  toUserId: z.string().trim().min(1).max(64),
+  amount: z.number().int().min(1).max(50),
+  note: z.string().trim().min(1).max(120),
+});
+export type MiniAppTipInput = z.infer<typeof MiniAppTipInputSchema>;
 
 export const MiniAppIdSchema = z
   .string()

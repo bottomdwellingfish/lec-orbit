@@ -10,12 +10,14 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   ipcMain,
   nativeTheme,
   protocol,
   session,
   shell,
   WebContentsView,
+  type MessageBoxOptions,
 } from 'electron';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -23,7 +25,10 @@ import { z } from 'zod';
 import { getOrbitEndpoints } from '../../src/shared/env';
 import type { AuthState, ThemePreference } from '../../src/shared/ipc';
 import {
+  MINIAPP_ECONOMY_LIMITS,
   MiniAppDisplayModeSchema,
+  MiniAppTipInputSchema,
+  MiniAppWagerCreateInputSchema,
   OrbitAppManifestSchema,
   type MiniAppBounds,
   type MiniAppDisplayMode,
@@ -378,6 +383,244 @@ export class MiniAppContainerManager {
         throw new Error('应用未在 manifest 中声明 clipboard 权限');
       }
       clipboard.writeText(z.string().max(50_000).parse(rawText));
+    });
+
+    // ── 通用乐币（coin）与本周打卡时长（punch_minutes）受控交易 IPC ──
+
+    const showConfirmDialog = (
+      parentWin: BrowserWindow | undefined,
+      options: MessageBoxOptions,
+    ) => (parentWin ? dialog.showMessageBox(parentWin, options) : dialog.showMessageBox(options));
+
+    ipcMain.handle('orbit:sdk:economy:getWallet', async (event) => {
+      const inst = resolveCaller(event.sender.id);
+      const scopes = inst.manifest.permissions.scopes;
+      if (
+        !scopes.includes('economy.read') &&
+        !scopes.includes('economy.wager.coin') &&
+        !scopes.includes('economy.wager.punch') &&
+        !scopes.includes('economy.tip')
+      ) {
+        throw new Error('应用未在 manifest 中声明 economy.* 权限');
+      }
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法读取钱包摘要');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wallet`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `读取钱包摘要失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:economy:wager:create', async (event, rawInput) => {
+      const inst = resolveCaller(event.sender.id);
+      const input = MiniAppWagerCreateInputSchema.parse(rawInput);
+      const requiredScope =
+        input.asset === 'coin' ? 'economy.wager.coin' : 'economy.wager.punch';
+      if (!inst.manifest.permissions.scopes.includes(requiredScope)) {
+        throw new Error(`应用未在 manifest 中声明 ${requiredScope} 权限`);
+      }
+      const limit = MINIAPP_ECONOMY_LIMITS[input.asset];
+      if (input.amount > limit) {
+        throw new Error(`单局数额超过平台上限（最大 ${limit}）`);
+      }
+
+      const assetLabel =
+        input.asset === 'coin'
+          ? `${input.amount} 乐币 (coin)`
+          : `${input.amount} 分钟本周打卡时长`;
+      const parentWin = inst.standaloneWindow ?? this.deps.getMainWindow() ?? undefined;
+      const confirm = await showConfirmDialog(parentWin, {
+        type: 'question',
+        buttons: ['取消', '确认画押发起'],
+        defaultId: 1,
+        cancelId: 0,
+        title: 'Orbit 约战托管授权确认',
+        message: `应用「${inst.manifest.name}」请求发起托管赌约`,
+        detail: `对局标题：${input.title}\n赌约筹码：${assetLabel}\n\n确认后筹码将由 Orbit 平台托管锁定，若未开局、超时或和棋将自动原路退还。`,
+      });
+      if (confirm.response !== 1) {
+        throw new Error('用户取消了赌约授权');
+      }
+
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法创建托管赌约');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wagers`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(input),
+        },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `创建托管赌约失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:economy:wager:get', async (event, rawOrderId) => {
+      const inst = resolveCaller(event.sender.id);
+      const scopes = inst.manifest.permissions.scopes;
+      if (
+        !scopes.includes('economy.read') &&
+        !scopes.includes('economy.wager.coin') &&
+        !scopes.includes('economy.wager.punch')
+      ) {
+        throw new Error('应用未在 manifest 中声明赌约查询权限');
+      }
+      const orderId = z.string().uuid('无效的订单 ID').parse(rawOrderId);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法查询托管赌约');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wagers/${encodeURIComponent(orderId)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `读取托管赌约失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:economy:wager:accept', async (event, rawOrderId) => {
+      const inst = resolveCaller(event.sender.id);
+      const scopes = inst.manifest.permissions.scopes;
+      if (!scopes.includes('economy.wager.coin') && !scopes.includes('economy.wager.punch')) {
+        throw new Error('应用未在 manifest 中声明赌约权限');
+      }
+      const orderId = z.string().uuid('无效的订单 ID').parse(rawOrderId);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法应战托管赌约');
+
+      const base = getOrbitEndpoints().orbitApiBase;
+      // 始终由主进程直接从服务端拉取真实订单金额与资产，杜绝小程序前端欺骗弹窗
+      const detailResp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wagers/${encodeURIComponent(orderId)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+      );
+      if (!detailResp.ok) {
+        const errBody = (await detailResp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `读取托管赌约详情失败（HTTP ${detailResp.status}）`);
+      }
+      const ticket = (await detailResp.json()) as {
+        asset: 'coin' | 'punch_minutes';
+        amount: number;
+        title?: string;
+      };
+      const requiredScope =
+        ticket.asset === 'coin' ? 'economy.wager.coin' : 'economy.wager.punch';
+      if (!scopes.includes(requiredScope)) {
+        throw new Error(`应用未在 manifest 中声明 ${requiredScope} 权限`);
+      }
+
+      const assetLabel =
+        ticket.asset === 'coin'
+          ? `${ticket.amount} 乐币 (coin)`
+          : `${ticket.amount} 分钟本周打卡时长`;
+      const parentWin = inst.standaloneWindow ?? this.deps.getMainWindow() ?? undefined;
+      const confirm = await showConfirmDialog(parentWin, {
+        type: 'question',
+        buttons: ['婉拒', '画押应战'],
+        defaultId: 1,
+        cancelId: 0,
+        title: 'Orbit 约战赌约应战确认',
+        message: `确认接受「${inst.manifest.name}」的约战赌约？`,
+        detail: `对局：${ticket.title || inst.manifest.name}\n赌约筹码：${assetLabel}\n\n确认后双方筹码进入 Orbit 托管锁定，对局结束由权威服务端自动结算。`,
+      });
+      if (confirm.response !== 1) {
+        throw new Error('用户婉拒了赌约应战');
+      }
+
+      const acceptResp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wagers/${encodeURIComponent(orderId)}/accept`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        },
+      );
+      if (!acceptResp.ok) {
+        const errBody = (await acceptResp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `应战托管赌约失败（HTTP ${acceptResp.status}）`);
+      }
+      return acceptResp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:economy:wager:cancel', async (event, rawOrderId) => {
+      const inst = resolveCaller(event.sender.id);
+      const scopes = inst.manifest.permissions.scopes;
+      if (!scopes.includes('economy.wager.coin') && !scopes.includes('economy.wager.punch')) {
+        throw new Error('应用未在 manifest 中声明赌约权限');
+      }
+      const orderId = z.string().uuid('无效的订单 ID').parse(rawOrderId);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法取消托管赌约');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/wagers/${encodeURIComponent(orderId)}/cancel`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `取消托管赌约失败（HTTP ${resp.status}）`);
+      }
+    });
+
+    ipcMain.handle('orbit:sdk:economy:tip', async (event, rawInput) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('economy.tip')) {
+        throw new Error('应用未在 manifest 中声明 economy.tip 权限');
+      }
+      const input = MiniAppTipInputSchema.parse(rawInput);
+      const parentWin = inst.standaloneWindow ?? this.deps.getMainWindow() ?? undefined;
+      const confirm = await showConfirmDialog(parentWin, {
+        type: 'question',
+        buttons: ['取消', '确认打赏'],
+        defaultId: 1,
+        cancelId: 0,
+        title: 'Orbit 乐币打赏确认',
+        message: `应用「${inst.manifest.name}」请求向成员打赏 ${input.amount} 乐币`,
+        detail: `收款成员 ID：${input.toUserId}\n打赏留言：${input.note}\n\n确认后将从你的乐币余额实时划转给对方。`,
+      });
+      if (confirm.response !== 1) {
+        throw new Error('用户取消了打赏');
+      }
+
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法发起打赏');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/economy/tip`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(input),
+        },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `打赏失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
     });
   }
 

@@ -52,16 +52,13 @@ jobs:
           bun run typecheck
           bun run test
           bun run build
-      - name: 安装 Go 并运行服务端测试
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache-dependency-path: apps/lec-orbit/server/go.sum
-      - name: Go 后端单测与编译检查
+      - name: NestJS 12 服务端类型检查、单测与编译
         working-directory: apps/lec-orbit/server
         run: |
-          go test ./...
-          go build ./cmd/orbit-server
+          bun install --frozen-lockfile || bun install
+          bun run typecheck
+          bun run test
+          bun run build
 
   build-lec-doc:
     name: 构建内置 LecDoc 前端包

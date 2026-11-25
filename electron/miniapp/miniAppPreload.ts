@@ -28,8 +28,65 @@ export interface OrbitSdkEnvInfo {
   orbitVersion: string;
 }
 
+export type OrbitSdkAsset = 'coin' | 'punch_minutes';
+
+export interface OrbitSdkWalletSummary {
+  coinBalance: number;
+  frozenCoins: number;
+  lifetimeEarnedCoins: number;
+  weeklyRecordedMinutes: number;
+  weeklyTradeMinutes: number;
+  punchAffectsAssessment: boolean;
+  quotas: {
+    maxCoinPerOrder: number;
+    maxPunchPerOrder: number;
+    dailyCoinRemaining: number;
+    weeklyCoinGainRemaining: number;
+    weeklyPunchGainRemaining: number;
+    weeklyPunchLossRemaining: number;
+    activeOrdersCount: number;
+    maxActiveOrders: number;
+  };
+}
+
+export interface OrbitSdkWagerCreateInput {
+  asset: OrbitSdkAsset;
+  amount: number;
+  matchId: string;
+  opponentUserId?: string;
+  title: string;
+  acceptTimeoutSeconds?: number;
+}
+
+export interface OrbitSdkTipInput {
+  toUserId: string;
+  amount: number;
+  note: string;
+}
+
+export interface OrbitSdkOrderTicket {
+  orderId: string;
+  appId: string;
+  orderType: string;
+  matchId: string;
+  title: string;
+  asset: OrbitSdkAsset;
+  amount: number;
+  weekKey: string;
+  status: 'pending_accept' | 'locked' | 'settled' | 'refunded' | 'cancelled' | 'expired';
+  creatorUserId: string;
+  opponentUserId?: string;
+  winnerUserId?: string;
+  loserUserId?: string;
+  summary?: string;
+  acceptExpiresAt: number;
+  settleExpiresAt?: number;
+  settledAt?: number;
+  createdAt: number;
+}
+
 const orbitSDK = {
-  sdkVersion: '1.0.0' as const,
+  sdkVersion: '1.1.0' as const,
   isOrbit: true as const,
 
   env: {
@@ -83,6 +140,24 @@ const orbitSDK = {
       ipcRenderer.on('orbit:sdk:event:resume', wrapped);
       return () => ipcRenderer.removeListener('orbit:sdk:event:resume', wrapped);
     },
+  },
+
+  economy: {
+    isNative: true as const,
+    getWallet: (): Promise<OrbitSdkWalletSummary> =>
+      ipcRenderer.invoke('orbit:sdk:economy:getWallet'),
+    wager: {
+      create: (input: OrbitSdkWagerCreateInput): Promise<OrbitSdkOrderTicket> =>
+        ipcRenderer.invoke('orbit:sdk:economy:wager:create', input),
+      accept: (orderId: string): Promise<OrbitSdkOrderTicket> =>
+        ipcRenderer.invoke('orbit:sdk:economy:wager:accept', orderId),
+      cancel: (orderId: string): Promise<void> =>
+        ipcRenderer.invoke('orbit:sdk:economy:wager:cancel', orderId),
+      get: (orderId: string): Promise<OrbitSdkOrderTicket> =>
+        ipcRenderer.invoke('orbit:sdk:economy:wager:get', orderId),
+    },
+    tip: (input: OrbitSdkTipInput): Promise<OrbitSdkOrderTicket> =>
+      ipcRenderer.invoke('orbit:sdk:economy:tip', input),
   },
 };
 

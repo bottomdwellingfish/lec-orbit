@@ -1,27 +1,23 @@
-# 多阶段轻量构建：单二进制静态编译，最终镜像 < 25MB，校园机快速构建
-ARG GO_IMAGE=golang:1.24-alpine
-ARG ALPINE_IMAGE=alpine:3.21
+# 多阶段轻量构建：NestJS 12 (@nestjs/platform-node) + TypeORM + Bun（同时兼容 Node 22+）
+ARG BUN_IMAGE=oven/bun:1.3-alpine
 
-FROM ${GO_IMAGE} AS builder
+FROM ${BUN_IMAGE} AS builder
 WORKDIR /src
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-ARG GOPROXY=https://goproxy.cn,direct
-ENV GOPROXY=${GOPROXY}
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
 
 COPY . .
-RUN go test ./... && go build -trimpath -ldflags="-s -w" -o /out/orbit-server ./cmd/orbit-server
+RUN bun run typecheck && bun run test && bun run build
 
-FROM ${ALPINE_IMAGE} AS runtime
-ARG APK_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/alpine
-RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${APK_MIRROR%/}#g" /etc/apk/repositories \
-    && apk add --no-cache ca-certificates tzdata \
-    && addgroup -S orbit && adduser -S -G orbit orbit
-
+FROM ${BUN_IMAGE} AS runtime
 WORKDIR /app
-COPY --from=builder /out/orbit-server /app/orbit-server
-USER orbit
+ENV NODE_ENV=production
+
+COPY --from=builder /src/package.json ./
+COPY --from=builder /src/node_modules ./node_modules
+COPY --from=builder /src/dist ./dist
+
+USER bun
 EXPOSE 8080
-ENTRYPOINT ["/app/orbit-server"]
+CMD ["bun", "run", "dist/main.js"]
