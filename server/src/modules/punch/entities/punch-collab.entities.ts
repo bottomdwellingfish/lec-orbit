@@ -325,3 +325,27 @@ export class PunchTeamLedgerEntryEntity {
   @Column({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }
+
+/** 皮肤解锁记录表（对应原 MongoDB skin_unlocks 集合）。 */
+@Entity({ name: 'punch_skin_unlocks' })
+@Index('idx_punch_skin_unlocks_user_skin', ['userId', 'skinId'], { unique: true })
+export class PunchSkinUnlockEntity {
+  @PrimaryColumn({ name: 'id', type: 'text' })
+  id: string;
+
+  @Index()
+  @Column({ name: 'user_id', type: 'text' })
+  userId: string;
+
+  @Column({ name: 'skin_id', type: 'text' })
+  skinId: string;
+
+  @Column({ name: 'unlocked_at', type: 'timestamptz' })
+  unlockedAt: Date;
+
+  @Column({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @Column({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
+}

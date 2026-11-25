@@ -106,7 +106,7 @@ function toCatalogDTO(
     ownerName: a.ownerName,
     ownerAvatar: a.ownerAvatar,
     status: a.status,
-    featuredRank: a.featuredRank,
+    featuredRank: Number(a.featuredRank ?? 0),
     playCount: Number(a.playCount ?? 0),
     activeVersion: active ? toVersionDTO(active) : undefined,
     latestVersion: latest ? toVersionDTO(latest) : undefined,

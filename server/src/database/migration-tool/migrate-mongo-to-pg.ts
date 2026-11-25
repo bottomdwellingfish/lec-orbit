@@ -98,33 +98,78 @@ async function migrateAllTables(mongoDb: Db, ds: DataSource, dryRun: boolean): P
   }
 }
 
-async function initCoinsFromMigratedData(ds: DataSource, dryRun: boolean): Promise<void> {
-  const users = (await ds.query(
-    `SELECT id, logto_user_id AS "logtoUserId", username FROM punch_users`,
-  )) as Array<{ id: string; logtoUserId: string | null; username: string }>;
-  const pointRows = (await ds.query(
-    `SELECT user_id AS "userId", points FROM punch_point_ledger_entries`,
-  )) as Array<{ userId: string; points: number }>;
-  const adjustmentRows = (await ds.query(
-    `SELECT user_id AS "userId", signed_duration_seconds AS "signedDurationSeconds"
-     FROM punch_attendance_duration_adjustments`,
-  )) as Array<{ userId: string; signedDurationSeconds: number }>;
-
+async function initCoinsFromMigratedData(
+  mongoDb: Db,
+  ds: DataSource,
+  dryRun: boolean,
+): Promise<void> {
   const now = new Date();
-  const { weekKey, grants } = computeInitialCoinGrants({
-    users,
-    pointRows,
-    adjustmentRows,
+  const weekKey = computeInitialCoinGrants({
+    users: [],
+    pointRows: [],
+    adjustmentRows: [],
     currentWeekSessions: [],
     now,
-  });
+  }).weekKey;
 
-  // 补查当前周已完成会话，同步每位成员本周真实打卡分钟数
-  const weekSessions = (await ds.query(
-    `SELECT user_id AS "userId", status, duration_seconds AS "durationSeconds"
-     FROM punch_attendance_sessions WHERE week_key = $1 AND status = 'completed'`,
-    [weekKey],
-  )) as Array<{ userId: string; status: string; durationSeconds: number | null }>;
+  let users: Array<{ id: string; logtoUserId: string | null; username: string }>;
+  let pointRows: Array<{ userId: string; points: number }>;
+  let adjustmentRows: Array<{ userId: string; signedDurationSeconds: number }>;
+  let weekSessions: Array<{ userId: string; status: string; durationSeconds: number | null }>;
+
+  if (dryRun) {
+    // 预演模式直接从只读 MongoDB 源库推算，无需写入 PG 任何表
+    const mUsers = (await mongoDb.collection('users').find({}).toArray()) as MongoDoc[];
+    users = mUsers.map((u) => ({
+      id: normalizeMongoId(u._id),
+      logtoUserId: u.logtoUserId ? String(u.logtoUserId) : null,
+      username: String(u.username ?? ''),
+    }));
+    const mPoints = (await mongoDb
+      .collection('point_ledger_entries')
+      .find({}, { projection: { userId: 1, points: 1 } })
+      .toArray()) as MongoDoc[];
+    pointRows = mPoints.map((p) => ({
+      userId: normalizeMongoId(p.userId),
+      points: Number(p.points ?? 0),
+    }));
+    const mAdjs = (await mongoDb
+      .collection('attendance_duration_adjustments')
+      .find({}, { projection: { userId: 1, signedDurationSeconds: 1 } })
+      .toArray()) as MongoDoc[];
+    adjustmentRows = mAdjs.map((a) => ({
+      userId: normalizeMongoId(a.userId),
+      signedDurationSeconds: Number(a.signedDurationSeconds ?? 0),
+    }));
+    const mSessions = (await mongoDb
+      .collection('attendance_sessions')
+      .find(
+        { weekKey, status: 'completed' },
+        { projection: { userId: 1, status: 1, durationSeconds: 1 } },
+      )
+      .toArray()) as MongoDoc[];
+    weekSessions = mSessions.map((s) => ({
+      userId: normalizeMongoId(s.userId),
+      status: String(s.status ?? 'completed'),
+      durationSeconds: s.durationSeconds !== undefined ? Number(s.durationSeconds) : null,
+    }));
+  } else {
+    users = (await ds.query(
+      `SELECT id, logto_user_id AS "logtoUserId", username FROM punch_users`,
+    )) as Array<{ id: string; logtoUserId: string | null; username: string }>;
+    pointRows = (await ds.query(
+      `SELECT user_id AS "userId", points FROM punch_point_ledger_entries`,
+    )) as Array<{ userId: string; points: number }>;
+    adjustmentRows = (await ds.query(
+      `SELECT user_id AS "userId", signed_duration_seconds AS "signedDurationSeconds"
+       FROM punch_attendance_duration_adjustments`,
+    )) as Array<{ userId: string; signedDurationSeconds: number }>;
+    weekSessions = (await ds.query(
+      `SELECT user_id AS "userId", status, duration_seconds AS "durationSeconds"
+       FROM punch_attendance_sessions WHERE week_key = $1 AND status = 'completed'`,
+      [weekKey],
+    )) as Array<{ userId: string; status: string; durationSeconds: number | null }>;
+  }
 
   const finalCalc = computeInitialCoinGrants({
     users,
@@ -137,7 +182,7 @@ async function initCoinsFromMigratedData(ds: DataSource, dryRun: boolean): Promi
   const totalCoins = finalCalc.grants.reduce((s, g) => s + g.initialCoins, 0);
   if (dryRun) {
     console.log(
-      `[dry-run] 期初乐币结转预览：${finalCalc.grants.length} 名成员，总计 ${totalCoins} coin`,
+      `[dry-run] 期初乐币结转预览（周次 ${weekKey}）：${finalCalc.grants.length} 名成员，总计 ${totalCoins} coin`,
     );
     return;
   }
@@ -333,7 +378,7 @@ async function main(): Promise<void> {
     if (!verifyOnly) {
       await migrateAllTables(mongoDb, ds, dryRun);
       if (!skipCoinInit) {
-        await initCoinsFromMigratedData(ds, dryRun);
+        await initCoinsFromMigratedData(mongoDb, ds, dryRun);
       }
     }
 
@@ -343,7 +388,9 @@ async function main(): Promise<void> {
         console.error('[verify] 存在表指纹或业务指标不一致，请排查！');
         process.exitCode = 1;
       } else {
-        console.log('[verify] 全部 20 张表 ID 指纹与核心业务指标 100% 校验一致！');
+        console.log(
+          `[verify] 全部 ${PUNCH_TABLE_SPECS.length} 张表 ID 指纹与核心业务指标 100% 校验一致！`,
+        );
       }
     }
   } finally {

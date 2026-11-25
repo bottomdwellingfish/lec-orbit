@@ -335,11 +335,23 @@ export class AddPunchTables1764100000000 implements MigrationInterface {
       );
       CREATE INDEX IF NOT EXISTS idx_punch_ledger_team_occurred ON punch_team_ledger_entries (team_id, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS idx_punch_ledger_reversal ON punch_team_ledger_entries (reversal_of_entry_id);
+
+      CREATE TABLE IF NOT EXISTS punch_skin_unlocks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        skin_id TEXT NOT NULL,
+        unlocked_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_punch_skin_unlocks_user ON punch_skin_unlocks (user_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_punch_skin_unlocks_user_skin ON punch_skin_unlocks (user_id, skin_id);
     `);
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
+      DROP TABLE IF EXISTS punch_skin_unlocks;
       DROP TABLE IF EXISTS punch_team_ledger_entries;
       DROP TABLE IF EXISTS punch_team_events;
       DROP TABLE IF EXISTS punch_weekly_report_references;

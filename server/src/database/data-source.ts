@@ -40,6 +40,7 @@ import {
   PunchNotificationEntity,
   PunchNotificationReceiptEntity,
   PunchReportEntity,
+  PunchSkinUnlockEntity,
   PunchTeamEventEntity,
   PunchTeamLedgerEntryEntity,
   PunchWeeklyReportRefEntity,
@@ -62,7 +63,7 @@ export const ALL_ENTITIES = [
   MiniAppCredentialEntity,
   EconomyOrderEntity,
   EconomyOrderParticipantEntity,
-  // LecPunch 20 张融合业务表
+  // LecPunch 21 张融合业务表
   PunchTeamEntity,
   PunchUserEntity,
   PunchNetworkPolicyEntity,
@@ -83,6 +84,7 @@ export const ALL_ENTITIES = [
   PunchWeeklyReportRefEntity,
   PunchTeamEventEntity,
   PunchTeamLedgerEntryEntity,
+  PunchSkinUnlockEntity,
 ];
 
 export const ALL_MIGRATIONS = [InitialSchema1764000000000, AddPunchTables1764100000000];

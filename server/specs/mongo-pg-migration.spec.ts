@@ -6,11 +6,11 @@ import {
   PUNCH_TABLE_SPECS,
 } from '../src/database/migration-tool/mongo-pg-mappers.js';
 
-describe('MongoDB -> PostgreSQL 20 表映射、校验指纹与期初乐币结转', () => {
-  it('完整覆盖全部 20 张 LecPunch 集合且无重复表名', () => {
-    expect(PUNCH_TABLE_SPECS).toHaveLength(20);
-    expect(new Set(PUNCH_TABLE_SPECS.map((s) => s.mongoCollection)).size).toBe(20);
-    expect(new Set(PUNCH_TABLE_SPECS.map((s) => s.pgTable)).size).toBe(20);
+describe('MongoDB -> PostgreSQL 21 表映射、校验指纹与期初乐币结转', () => {
+  it('完整覆盖全部 21 张 LecPunch 集合且无重复表名', () => {
+    expect(PUNCH_TABLE_SPECS).toHaveLength(21);
+    expect(new Set(PUNCH_TABLE_SPECS.map((s) => s.mongoCollection)).size).toBe(21);
+    expect(new Set(PUNCH_TABLE_SPECS.map((s) => s.pgTable)).size).toBe(21);
   });
 
   it('ObjectId 与文档字段可无损转换为 PG 行，确定性 ID 指纹与顺序无关', () => {

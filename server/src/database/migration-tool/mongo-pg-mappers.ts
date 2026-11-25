@@ -477,6 +477,19 @@ export const PUNCH_TABLE_SPECS: TableMigrationSpec[] = [
       updated_at: toDateOrNow(d.updatedAt),
     }),
   },
+  {
+    mongoCollection: 'skin_unlocks',
+    pgTable: 'punch_skin_unlocks',
+    columns: ['id', 'user_id', 'skin_id', 'unlocked_at', 'created_at', 'updated_at'],
+    mapDoc: (d) => ({
+      id: normalizeMongoId(d._id),
+      user_id: normalizeMongoId(d.userId),
+      skin_id: String(d.skinId ?? ''),
+      unlocked_at: toDateOrNow(d.unlockedAt ?? d.createdAt),
+      created_at: toDateOrNow(d.createdAt),
+      updated_at: toDateOrNow(d.updatedAt),
+    }),
+  },
 ];
 
 /** 对任意 ID 列表生成确定性 SHA256 指纹（排序后计算，用于逐表零丢行核验）。 */

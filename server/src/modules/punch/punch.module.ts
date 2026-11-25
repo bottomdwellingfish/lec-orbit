@@ -27,6 +27,7 @@ import {
   PunchNotificationEntity,
   PunchNotificationReceiptEntity,
   PunchReportEntity,
+  PunchSkinUnlockEntity,
   PunchTeamEventEntity,
   PunchTeamLedgerEntryEntity,
   PunchWeeklyReportRefEntity,
@@ -49,6 +50,7 @@ import { PunchCardsController, PunchCardsService } from './punch-cards.service.j
 import { PunchTitlesController, PunchTitlesService } from './punch-titles.service.js';
 import { PunchWeeklyReportsController } from './punch-weekly-reports.controller.js';
 import { PunchTeamOpsController } from './punch-team-ops.controller.js';
+import { PunchShopController } from './punch-shop.controller.js';
 
 @Module({
   imports: [
@@ -74,6 +76,7 @@ import { PunchTeamOpsController } from './punch-team-ops.controller.js';
       PunchWeeklyReportRefEntity,
       PunchTeamEventEntity,
       PunchTeamLedgerEntryEntity,
+      PunchSkinUnlockEntity,
     ]),
   ],
   controllers: [
@@ -88,6 +91,7 @@ import { PunchTeamOpsController } from './punch-team-ops.controller.js';
     PunchTitlesController,
     PunchWeeklyReportsController,
     PunchTeamOpsController,
+    PunchShopController,
   ],
   providers: [
     PunchAuthGuard,
