@@ -12,17 +12,18 @@ RUN npm install -g bun@1.4.5 @oven/bun-linux-x64-baseline@1.4.5 --registry=${NPM
     && if [ -x "$BASELINE_BIN" ]; then ln -sf "$BASELINE_BIN" /usr/local/bin/bun; fi \
     && bun --version
 
-COPY package.json bun.lock* ./
-RUN bun install --registry=${NPM_REGISTRY}
+COPY package.json ./
+# 使用 npm 串行稳定安装依赖以适配校园网 DNS 与国内镜像站，构建/测试/运行均走 Bun 1.4.5
+RUN npm install --no-audit --no-fund --registry=${NPM_REGISTRY}
 
 COPY . .
 RUN bun run typecheck && bun run test && bun run build
 
 # 仅打包生产依赖与编译产物，并提前设置权限避免运行阶段 overlayfs 复制膨胀
 RUN mkdir -p /prod \
-    && cp package.json bun.lock* /prod/ \
+    && cp package.json /prod/ \
     && cp -r dist /prod/dist \
-    && cd /prod && bun install --production --registry=${NPM_REGISTRY} \
+    && cd /prod && npm install --omit=dev --no-audit --no-fund --registry=${NPM_REGISTRY} \
     && chmod -R a+rX /prod
 
 FROM ${NODE_IMAGE} AS runtime
