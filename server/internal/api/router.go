@@ -119,6 +119,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.POST("/apps/upload", s.handleUploadMiniAppBundle)
 		v1.POST("/apps/import-github", s.handleImportGitHubMiniApp)
 		v1.POST("/apps/:id/versions/:versionId/review", auth.RequireCaptain(), s.handleReviewMiniAppVersion)
+		v1.POST("/apps/:id/versions/:versionId/withdraw", s.handleWithdrawMiniAppVersion)
+		v1.POST("/apps/:id/versions/:versionId/resubmit", s.handleResubmitMiniAppVersion)
 		v1.POST("/apps/:id/status", s.handleUpdateMiniAppStatus)
 		v1.POST("/apps/:id/play", s.handleRecordMiniAppPlay)
 		v1.GET("/apps/:id/kv", s.handleListMiniAppKVKeys)

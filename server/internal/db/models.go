@@ -107,6 +107,7 @@ type MiniAppVersion struct {
 	BundleKey    string     `gorm:"column:bundle_key;type:text;not null;default:''"`
 	BundleSHA256 string     `gorm:"column:bundle_sha256;type:text;not null"`
 	BundleSize   int64      `gorm:"column:bundle_size;not null;default:0"`
+	IconURL      *string    `gorm:"column:icon_url;type:text"`
 	ManifestJSON string     `gorm:"column:manifest_json;type:jsonb;not null;default:'{}'"`
 	Changelog    string     `gorm:"column:changelog;type:text;not null;default:''"`
 	UploaderID   string     `gorm:"column:uploader_id;type:text;not null"`

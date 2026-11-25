@@ -30,6 +30,15 @@ const (
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
+var errMiniAppReviewPending = errors.New("该作品已有待审核版本，请先撤回该版本")
+var errMiniAppCannotResubmit = errors.New("此版本当前无法重新送审，请刷新工坊")
+
+var (
+	errMiniAppNotOwned        = errors.New("仅作者或队长可执行此操作")
+	errMiniAppReviewClosed    = errors.New("该版本已不在待审核队列中，请刷新工坊")
+	errMiniAppRollbackVersion = errors.New("仅可回滚到已审核通过的历史版本")
+)
+
 type miniAppVersionDTO struct {
 	ID           string           `json:"id"`
 	AppID        string           `json:"appId"`
@@ -40,6 +49,7 @@ type miniAppVersionDTO struct {
 	BundleURL    string           `json:"bundleUrl"`
 	BundleSHA256 string           `json:"bundleSha256"`
 	BundleSize   int64            `json:"bundleSize"`
+	IconURL      *string          `json:"iconUrl,omitempty"`
 	Manifest     miniapp.Manifest `json:"manifest"`
 	Changelog    string           `json:"changelog"`
 	UploaderID   string           `json:"uploaderId"`
@@ -50,23 +60,25 @@ type miniAppVersionDTO struct {
 }
 
 type miniAppCatalogDTO struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name"`
-	Type          string             `json:"type"`
-	Engine        string             `json:"engine"`
-	Description   string             `json:"description"`
-	IconURL       string             `json:"iconUrl"`
-	Tags          []string           `json:"tags"`
-	OwnerID       string             `json:"ownerId"`
-	OwnerName     string             `json:"ownerName"`
-	OwnerAvatar   string             `json:"ownerAvatar"`
-	Status        string             `json:"status"`
-	FeaturedRank  int                `json:"featuredRank"`
-	PlayCount     int64              `json:"playCount"`
-	ActiveVersion *miniAppVersionDTO `json:"activeVersion,omitempty"`
-	LatestVersion *miniAppVersionDTO `json:"latestVersion,omitempty"`
-	CreatedAt     time.Time          `json:"createdAt"`
-	UpdatedAt     time.Time          `json:"updatedAt"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Type            string             `json:"type"`
+	Engine          string             `json:"engine"`
+	Description     string             `json:"description"`
+	IconURL         string             `json:"iconUrl"`
+	Tags            []string           `json:"tags"`
+	OwnerID         string             `json:"ownerId"`
+	OwnerName       string             `json:"ownerName"`
+	OwnerAvatar     string             `json:"ownerAvatar"`
+	Status          string             `json:"status"`
+	FeaturedRank    int                `json:"featuredRank"`
+	PlayCount       int64              `json:"playCount"`
+	ActiveVersion   *miniAppVersionDTO `json:"activeVersion,omitempty"`
+	LatestVersion   *miniAppVersionDTO `json:"latestVersion,omitempty"`
+	PendingVersion  *miniAppVersionDTO `json:"pendingVersion"`
+	RecoveryVersion *miniAppVersionDTO `json:"recoveryVersion,omitempty"`
+	CreatedAt       time.Time          `json:"createdAt"`
+	UpdatedAt       time.Time          `json:"updatedAt"`
 }
 
 type miniAppDetailDTO struct {
@@ -87,6 +99,7 @@ func toVersionDTO(v db.MiniAppVersion) miniAppVersionDTO {
 		BundleURL:    v.BundleURL,
 		BundleSHA256: v.BundleSHA256,
 		BundleSize:   v.BundleSize,
+		IconURL:      v.IconURL,
 		Manifest:     manifest,
 		Changelog:    v.Changelog,
 		UploaderID:   v.UploaderID,
@@ -97,7 +110,7 @@ func toVersionDTO(v db.MiniAppVersion) miniAppVersionDTO {
 	}
 }
 
-func toCatalogDTO(a db.MiniApp, active, latest *db.MiniAppVersion) miniAppCatalogDTO {
+func toCatalogDTO(a db.MiniApp, active, latest, pending *db.MiniAppVersion) miniAppCatalogDTO {
 	var tags []string
 	_ = json.Unmarshal([]byte(a.TagsJSON), &tags)
 	if tags == nil {
@@ -123,12 +136,87 @@ func toCatalogDTO(a db.MiniApp, active, latest *db.MiniAppVersion) miniAppCatalo
 	if active != nil {
 		v := toVersionDTO(*active)
 		dto.ActiveVersion = &v
+		// Older uploads could update the app row before review. The active
+		// manifest is the source of the released version's public metadata.
+		if v.Manifest.ID == a.ID && v.Manifest.Name != "" {
+			dto.Name = v.Manifest.Name
+			dto.Type = v.Manifest.Type
+			dto.Engine = v.Manifest.Engine
+			dto.Description = v.Manifest.Description
+			dto.Tags = append([]string{}, v.Manifest.Tags...)
+		}
+		if v.IconURL != nil {
+			dto.IconURL = *v.IconURL
+		}
 	}
 	if latest != nil {
 		v := toVersionDTO(*latest)
 		dto.LatestVersion = &v
 	}
+	if pending != nil {
+		v := toVersionDTO(*pending)
+		dto.PendingVersion = &v
+	}
 	return dto
+}
+
+func isPendingMiniAppRelease(v db.MiniAppVersion) bool {
+	return v.Channel == "release" && v.Status == "pending"
+}
+
+func reviewableMiniAppReleases(tx *gorm.DB, appID string) *gorm.DB {
+	return tx.Model(&db.MiniAppVersion{}).
+		Where("app_id = ? AND channel = ? AND status = ?", appID, "release", "pending").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM mini_app_versions AS newer
+			WHERE newer.app_id = mini_app_versions.app_id AND newer.status = 'approved'
+			  AND (newer.created_at, newer.id) > (mini_app_versions.created_at, mini_app_versions.id)
+		)`)
+}
+
+func supersedeEarlierMiniAppReleases(tx *gorm.DB, approved db.MiniAppVersion) error {
+	return tx.Model(&db.MiniAppVersion{}).
+		Where("app_id = ? AND channel = ? AND status = ?", approved.AppID, "release", "pending").
+		Where("(created_at, id) < (?, ?)", approved.CreatedAt, approved.ID).
+		Update("status", "superseded").Error
+}
+
+func miniAppMetadataUpdates(app *db.MiniApp, manifest miniapp.Manifest, iconURL *string) map[string]any {
+	updates := make(map[string]any)
+	if manifest.ID == app.ID && manifest.Name != "" {
+		tags, _ := json.Marshal(manifest.Tags)
+		app.Name, app.Type, app.Engine = manifest.Name, manifest.Type, manifest.Engine
+		app.Description, app.TagsJSON = manifest.Description, string(tags)
+		updates["name"], updates["type"], updates["engine"] = app.Name, app.Type, app.Engine
+		updates["description"], updates["tags_json"] = app.Description, app.TagsJSON
+	}
+	if iconURL != nil {
+		app.IconURL = *iconURL
+		updates["icon_url"] = app.IconURL
+	}
+	return updates
+}
+
+func miniAppRecoveryVersion(app db.MiniApp, active, withdrawn *db.MiniAppVersion) *db.MiniAppVersion {
+	if withdrawn != nil && (active == nil || withdrawn.CreatedAt.After(active.CreatedAt)) {
+		return withdrawn
+	}
+	if app.Status == "suspended" && active != nil && active.Status == "approved" {
+		return active
+	}
+	return nil
+}
+
+func checkMiniAppReviewQueue(tx *gorm.DB, appID string) error {
+	var version db.MiniAppVersion
+	result := reviewableMiniAppReleases(tx, appID).Select("id").Limit(1).Find(&version)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return errMiniAppReviewPending
+	}
+	return nil
 }
 
 func (s *Server) handleListMiniApps(c *gin.Context) {
@@ -136,28 +224,41 @@ func (s *Server) handleListMiniApps(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	q := s.gdb.WithContext(ctx).Model(&db.MiniApp{})
-	if t := strings.TrimSpace(c.Query("type")); t == "miniapp" || t == "minigame" {
-		q = q.Where("type = ?", t)
+	appType := strings.TrimSpace(c.Query("type"))
+	engine := strings.TrimSpace(c.Query("engine"))
+	keyword := strings.TrimSpace(c.Query("q"))
+	filterType := appType == "miniapp" || appType == "minigame"
+	filterEngine := engine != "" && engine != "all"
+	if filterType || filterEngine || keyword != "" {
+		// Use the same active-version metadata as the catalog DTO for legacy rows.
+		q = q.Select("mini_apps.*").Joins(`LEFT JOIN mini_app_versions AS active ON
+			active.id = mini_apps.active_version_id AND active.app_id = mini_apps.id
+			AND active.manifest_json->>'id' = mini_apps.id AND active.manifest_json->>'name' <> ''`)
 	}
-	if eng := strings.TrimSpace(c.Query("engine")); eng != "" && eng != "all" {
-		q = q.Where("engine = ?", eng)
+	if filterType {
+		q = q.Where("CASE WHEN active.id IS NULL THEN mini_apps.type ELSE active.manifest_json->>'type' END = ?", appType)
 	}
-	if kw := strings.TrimSpace(c.Query("q")); kw != "" {
-		like := "%" + kw + "%"
-		q = q.Where("name ILIKE ? OR description ILIKE ? OR id ILIKE ?", like, like, like)
+	if filterEngine {
+		q = q.Where("CASE WHEN active.id IS NULL THEN mini_apps.engine ELSE active.manifest_json->>'engine' END = ?", engine)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		q = q.Where(`(COALESCE(active.manifest_json->>'name', mini_apps.name) ILIKE ?
+			OR (CASE WHEN active.id IS NULL THEN mini_apps.description ELSE active.manifest_json->>'description' END) ILIKE ?
+			OR mini_apps.id ILIKE ?)`, like, like, like)
 	}
 	mineOnly := c.Query("mine") == "1" || c.Query("mine") == "true"
 	pendingOnly := c.Query("pending") == "1" || c.Query("pending") == "true"
 
 	if mineOnly {
-		q = q.Where("owner_id = ?", user.UserID)
+		q = q.Where("mini_apps.owner_id = ?", user.UserID)
 	} else if !user.IsCaptain {
 		// 普通成员仅可见已上架应用及自己创建的作品
-		q = q.Where("status = ? OR owner_id = ?", "published", user.UserID)
+		q = q.Where("mini_apps.status = ? OR mini_apps.owner_id = ?", "published", user.UserID)
 	}
 
 	var apps []db.MiniApp
-	if err := q.Order("featured_rank DESC, play_count DESC, updated_at DESC").Find(&apps).Error; err != nil {
+	if err := q.Order("mini_apps.featured_rank DESC, mini_apps.play_count DESC, mini_apps.updated_at DESC").Find(&apps).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询工坊应用列表失败"})
 		return
 	}
@@ -169,21 +270,33 @@ func (s *Server) handleListMiniApps(c *gin.Context) {
 
 	versionByID := make(map[uuid.UUID]db.MiniAppVersion)
 	latestByApp := make(map[string]db.MiniAppVersion)
-	pendingByApp := make(map[string]bool)
+	pendingByApp := make(map[string]db.MiniAppVersion)
+	withdrawnByApp := make(map[string]db.MiniAppVersion)
+	approvedSeen := make(map[string]bool)
 
 	if len(appIDs) > 0 {
 		var versions []db.MiniAppVersion
 		if err := s.gdb.WithContext(ctx).
 			Where("app_id IN ?", appIDs).
-			Order("created_at DESC").
+			Order("created_at DESC, id DESC").
 			Find(&versions).Error; err == nil {
 			for _, v := range versions {
 				versionByID[v.ID] = v
 				if _, exists := latestByApp[v.AppID]; !exists {
 					latestByApp[v.AppID] = v
 				}
-				if v.Status == "pending" {
-					pendingByApp[v.AppID] = true
+				if v.Status == "approved" {
+					approvedSeen[v.AppID] = true
+				}
+				if isPendingMiniAppRelease(v) && !approvedSeen[v.AppID] {
+					if _, exists := pendingByApp[v.AppID]; !exists {
+						pendingByApp[v.AppID] = v
+					}
+				}
+				if v.Channel == "release" && v.Status == "withdrawn" {
+					if _, exists := withdrawnByApp[v.AppID]; !exists {
+						withdrawnByApp[v.AppID] = v
+					}
 				}
 			}
 		}
@@ -191,7 +304,9 @@ func (s *Server) handleListMiniApps(c *gin.Context) {
 
 	items := make([]miniAppCatalogDTO, 0, len(apps))
 	for _, a := range apps {
-		if pendingOnly && !pendingByApp[a.ID] {
+		showPrivateVersions := user.IsCaptain || a.OwnerID == user.UserID
+		pending, hasPending := pendingByApp[a.ID]
+		if pendingOnly && (!showPrivateVersions || !hasPending) {
 			continue
 		}
 		var activePtr *db.MiniAppVersion
@@ -203,12 +318,27 @@ func (s *Server) handleListMiniApps(c *gin.Context) {
 		}
 		var latestPtr *db.MiniAppVersion
 		if hit, ok := latestByApp[a.ID]; ok {
-			if user.IsCaptain || a.OwnerID == user.UserID || hit.Status == "approved" {
+			if showPrivateVersions || hit.Status == "approved" {
 				cp := hit
 				latestPtr = &cp
 			}
 		}
-		items = append(items, toCatalogDTO(a, activePtr, latestPtr))
+		var pendingPtr *db.MiniAppVersion
+		if showPrivateVersions && hasPending {
+			pendingPtr = &pending
+		}
+		dto := toCatalogDTO(a, activePtr, latestPtr, pendingPtr)
+		if a.OwnerID == user.UserID && !hasPending {
+			var withdrawnPtr *db.MiniAppVersion
+			if withdrawn, ok := withdrawnByApp[a.ID]; ok {
+				withdrawnPtr = &withdrawn
+			}
+			if recovery := miniAppRecoveryVersion(a, activePtr, withdrawnPtr); recovery != nil {
+				version := toVersionDTO(*recovery)
+				dto.RecoveryVersion = &version
+			}
+		}
+		items = append(items, dto)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -235,14 +365,18 @@ func (s *Server) handleGetMiniApp(c *gin.Context) {
 	}
 
 	var versions []db.MiniAppVersion
-	vq := s.gdb.WithContext(ctx).Where("app_id = ?", app.ID).Order("created_at DESC").Limit(20)
+	vq := s.gdb.WithContext(ctx).Where("app_id = ?", app.ID).Order("created_at DESC, id DESC").Limit(20)
 	if !user.IsCaptain && app.OwnerID != user.UserID {
 		vq = vq.Where("status = ?", "approved")
 	}
-	_ = vq.Find(&versions).Error
+	if err := vq.Find(&versions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取版本历史失败"})
+		return
+	}
 
 	var activePtr *db.MiniAppVersion
 	var latestPtr *db.MiniAppVersion
+	var pendingPtr *db.MiniAppVersion
 	vDTOs := make([]miniAppVersionDTO, 0, len(versions))
 	for i := range versions {
 		vDTOs = append(vDTOs, toVersionDTO(versions[i]))
@@ -253,9 +387,30 @@ func (s *Server) handleGetMiniApp(c *gin.Context) {
 			activePtr = &versions[i]
 		}
 	}
+	if activePtr == nil && app.ActiveVersionID != nil {
+		var active db.MiniAppVersion
+		err := s.gdb.WithContext(ctx).First(&active, "app_id = ? AND id = ? AND status = ?", app.ID, *app.ActiveVersionID, "approved").Error
+		if err == nil {
+			activePtr = &active
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取上架版本失败"})
+			return
+		}
+	}
+	if user.IsCaptain || app.OwnerID == user.UserID {
+		var pending db.MiniAppVersion
+		err := reviewableMiniAppReleases(s.gdb.WithContext(ctx), app.ID).
+			Order("created_at DESC, id DESC").Take(&pending).Error
+		if err == nil {
+			pendingPtr = &pending
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取待审版本失败"})
+			return
+		}
+	}
 
 	c.JSON(http.StatusOK, miniAppDetailDTO{
-		miniAppCatalogDTO: toCatalogDTO(app, activePtr, latestPtr),
+		miniAppCatalogDTO: toCatalogDTO(app, activePtr, latestPtr, pendingPtr),
 		Versions:          vDTOs,
 	})
 }
@@ -295,12 +450,21 @@ func (s *Server) handleUploadMiniAppBundle(c *gin.Context) {
 		return
 	}
 
+	targetAppID := strings.TrimSpace(c.PostForm("targetAppId"))
+	if targetAppID != "" && targetAppID != validated.Manifest.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "构建包内的作品 ID 必须与当前作品一致"})
+		return
+	}
 	channel := strings.TrimSpace(c.PostForm("channel"))
 	if channel != "release" {
 		channel = "preview"
 	}
 	changelog := strings.TrimSpace(c.PostForm("changelog"))
 	directPublish := user.IsCaptain && (c.PostForm("directPublish") == "true" || c.PostForm("directPublish") == "1")
+	if targetAppID != "" {
+		channel = "release"
+		directPublish = false
+	}
 
 	ctx := c.Request.Context()
 	// 校验所有权
@@ -314,6 +478,20 @@ func (s *Server) handleUploadMiniAppBundle(c *gin.Context) {
 	if !isNewApp && existing.OwnerID != user.UserID && !user.IsCaptain {
 		c.JSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("应用 ID %q 已被其他成员注册", validated.Manifest.ID)})
 		return
+	}
+	if targetAppID != "" {
+		if isNewApp {
+			writeMiniAppUploadError(c, gorm.ErrRecordNotFound)
+			return
+		}
+		if existing.OwnerID != user.UserID {
+			writeMiniAppUploadError(c, errMiniAppNotOwned)
+			return
+		}
+		if err := checkMiniAppReviewQueue(s.gdb.WithContext(ctx), targetAppID); err != nil {
+			writeMiniAppUploadError(c, err)
+			return
+		}
 	}
 
 	// 上传构建包到 RustFS
@@ -334,6 +512,7 @@ func (s *Server) handleUploadMiniAppBundle(c *gin.Context) {
 	}
 
 	dto, err := s.persistMiniAppVersion(ctx, user, persistVersionInput{
+		TargetAppID:   targetAppID,
 		Manifest:      validated.Manifest,
 		ManifestJSON:  validated.ManifestJSON,
 		IconURL:       iconURL,
@@ -347,7 +526,7 @@ func (s *Server) handleUploadMiniAppBundle(c *gin.Context) {
 		DirectPublish: directPublish,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeMiniAppUploadError(c, err)
 		return
 	}
 
@@ -357,6 +536,7 @@ func (s *Server) handleUploadMiniAppBundle(c *gin.Context) {
 func (s *Server) handleImportGitHubMiniApp(c *gin.Context) {
 	user, _ := auth.CurrentUser(c)
 	var req struct {
+		TargetAppID   string           `json:"targetAppId"`
 		BundleURL     string           `json:"bundleUrl" binding:"required"`
 		BundleSHA256  string           `json:"bundleSha256" binding:"required"`
 		BundleSize    int64            `json:"bundleSize"`
@@ -383,6 +563,11 @@ func (s *Server) handleImportGitHubMiniApp(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	targetAppID := strings.TrimSpace(req.TargetAppID)
+	if targetAppID != "" && targetAppID != req.Manifest.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "清单内的作品 ID 必须与当前作品一致"})
+		return
+	}
 
 	ctx := c.Request.Context()
 	var existing db.MiniApp
@@ -402,12 +587,18 @@ func (s *Server) handleImportGitHubMiniApp(c *gin.Context) {
 	if channel != "release" {
 		channel = "preview"
 	}
+	directPublish := user.IsCaptain && req.DirectPublish
+	if targetAppID != "" {
+		channel = "release"
+		directPublish = false
+	}
 	iconURL := strings.TrimSpace(req.IconURL)
 	if iconURL == "" {
 		iconURL = existing.IconURL
 	}
 
 	dto, err := s.persistMiniAppVersion(ctx, user, persistVersionInput{
+		TargetAppID:   targetAppID,
 		Manifest:      req.Manifest,
 		ManifestJSON:  string(manifestBytes),
 		IconURL:       iconURL,
@@ -417,17 +608,31 @@ func (s *Server) handleImportGitHubMiniApp(c *gin.Context) {
 		BundleSize:    req.BundleSize,
 		Channel:       channel,
 		Changelog:     strings.TrimSpace(req.Changelog),
-		DirectPublish: user.IsCaptain && req.DirectPublish,
+		DirectPublish: directPublish,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeMiniAppUploadError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusCreated, dto)
 }
 
+func writeMiniAppUploadError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "工坊作品不存在"})
+	case errors.Is(err, errMiniAppNotOwned):
+		c.JSON(http.StatusForbidden, gin.H{"error": "仅作品作者可上传新版本"})
+	case errors.Is(err, errMiniAppReviewPending):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
+}
+
 type persistVersionInput struct {
+	TargetAppID   string
 	Manifest      miniapp.Manifest
 	ManifestJSON  string
 	IconURL       string
@@ -481,7 +686,25 @@ func (s *Server) persistMiniAppVersion(
 	var savedApp db.MiniApp
 	err := s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var app db.MiniApp
-		findErr := tx.First(&app, "id = ?", in.Manifest.ID).Error
+		findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, "id = ?", in.Manifest.ID).Error
+		if in.TargetAppID != "" {
+			if findErr != nil {
+				return findErr
+			}
+			if app.OwnerID != user.UserID {
+				return errMiniAppNotOwned
+			}
+			if err := checkMiniAppReviewQueue(tx, app.ID); err != nil {
+				return err
+			}
+		}
+		now = time.Now().UTC()
+		ver.CreatedAt = now
+		iconURL := in.IconURL
+		if iconURL == "" {
+			iconURL = app.IconURL
+		}
+		ver.IconURL = &iconURL
 		if errors.Is(findErr, gorm.ErrRecordNotFound) {
 			app = db.MiniApp{
 				ID:          in.Manifest.ID,
@@ -489,7 +712,7 @@ func (s *Server) persistMiniAppVersion(
 				Type:        in.Manifest.Type,
 				Engine:      in.Manifest.Engine,
 				Description: in.Manifest.Description,
-				IconURL:     in.IconURL,
+				IconURL:     iconURL,
 				TagsJSON:    string(tagsJSON),
 				OwnerID:     user.UserID,
 				OwnerName:   user.DisplayName,
@@ -507,18 +730,9 @@ func (s *Server) persistMiniAppVersion(
 			}
 		} else if findErr != nil {
 			return findErr
-		} else {
-			updates := map[string]any{
-				"name":        in.Manifest.Name,
-				"type":        in.Manifest.Type,
-				"engine":      in.Manifest.Engine,
-				"description": in.Manifest.Description,
-				"tags_json":   string(tagsJSON),
-				"updated_at":  now,
-			}
-			if in.IconURL != "" {
-				updates["icon_url"] = in.IconURL
-			}
+		} else if in.DirectPublish || (app.ActiveVersionID == nil && app.Status != "published") {
+			updates := miniAppMetadataUpdates(&app, in.Manifest, ver.IconURL)
+			updates["updated_at"] = now
 			if in.DirectPublish {
 				updates["status"] = "published"
 				updates["active_version_id"] = verID
@@ -528,19 +742,16 @@ func (s *Server) persistMiniAppVersion(
 			if err := tx.Model(&app).Updates(updates).Error; err != nil {
 				return fmt.Errorf("更新应用元数据失败：%w", err)
 			}
-			app.Name = in.Manifest.Name
-			app.Type = in.Manifest.Type
-			app.Engine = in.Manifest.Engine
-			app.Description = in.Manifest.Description
-			if in.IconURL != "" {
-				app.IconURL = in.IconURL
-			}
-			app.TagsJSON = string(tagsJSON)
 			app.UpdatedAt = now
 		}
 
 		if err := tx.Create(&ver).Error; err != nil {
 			return fmt.Errorf("写入版本记录失败：%w", err)
+		}
+		if in.DirectPublish {
+			if err := supersedeEarlierMiniAppReleases(tx, ver); err != nil {
+				return err
+			}
 		}
 		savedApp = app
 		return nil
@@ -558,7 +769,11 @@ func (s *Server) persistMiniAppVersion(
 	if in.DirectPublish {
 		activePtr = &ver
 	}
-	return toCatalogDTO(savedApp, activePtr, &ver), nil
+	var pendingPtr *db.MiniAppVersion
+	if isPendingMiniAppRelease(ver) {
+		pendingPtr = &ver
+	}
+	return toCatalogDTO(savedApp, activePtr, &ver, pendingPtr), nil
 }
 
 func (s *Server) notifyCaptainsOfAppSubmission(
@@ -591,6 +806,107 @@ func (s *Server) notifyCaptainsOfAppSubmission(
 	}
 }
 
+func (s *Server) handleWithdrawMiniAppVersion(c *gin.Context) {
+	user, _ := auth.CurrentUser(c)
+	appID := strings.TrimSpace(c.Param("id"))
+	verID, err := uuid.Parse(strings.TrimSpace(c.Param("versionId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本 ID"})
+		return
+	}
+
+	err = s.gdb.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var app db.MiniApp
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, "id = ?", appID).Error; err != nil {
+			return err
+		}
+		if app.OwnerID != user.UserID {
+			return errMiniAppNotOwned
+		}
+		var ver db.MiniAppVersion
+		if err := tx.First(&ver, "id = ? AND app_id = ?", verID, app.ID).Error; err != nil {
+			return err
+		}
+		if ver.Status == "withdrawn" && ver.Channel == "release" {
+			return nil
+		}
+		if !isPendingMiniAppRelease(ver) {
+			return errMiniAppReviewClosed
+		}
+		return tx.Model(&ver).Update("status", "withdrawn").Error
+	})
+	switch {
+	case errors.Is(err, errMiniAppNotOwned):
+		c.JSON(http.StatusForbidden, gin.H{"error": "仅作品作者可撤回送审"})
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "应用或目标版本不存在"})
+	case errors.Is(err, errMiniAppReviewClosed):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "撤回送审失败"})
+	default:
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
+func (s *Server) handleResubmitMiniAppVersion(c *gin.Context) {
+	user, _ := auth.CurrentUser(c)
+	appID := strings.TrimSpace(c.Param("id"))
+	sourceID, err := uuid.Parse(strings.TrimSpace(c.Param("versionId")))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本 ID"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	var app db.MiniApp
+	var submission db.MiniAppVersion
+	err = s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, "id = ?", appID).Error; err != nil {
+			return err
+		}
+		if app.OwnerID != user.UserID {
+			return errMiniAppNotOwned
+		}
+		if err := tx.First(&submission, "id = ? AND app_id = ?", sourceID, appID).Error; err != nil {
+			return err
+		}
+		isWithdrawn := submission.Status == "withdrawn" && submission.Channel == "release"
+		isSuspendedVersion := app.Status == "suspended" && app.ActiveVersionID != nil &&
+			*app.ActiveVersionID == sourceID && submission.Status == "approved"
+		if !isWithdrawn && !isSuspendedVersion {
+			return errMiniAppCannotResubmit
+		}
+		if err := checkMiniAppReviewQueue(tx, app.ID); err != nil {
+			return err
+		}
+
+		// Keep the bundle, manifest and version number. The approval is for a fresh ID.
+		submission.ID = uuid.New()
+		submission.Channel = "release"
+		submission.Status = "pending"
+		submission.UploaderID = user.UserID
+		submission.ReviewerID = nil
+		submission.ReviewNote = nil
+		submission.ReviewedAt = nil
+		submission.CreatedAt = time.Now().UTC()
+		return tx.Create(&submission).Error
+	})
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "应用或目标版本不存在"})
+	case errors.Is(err, errMiniAppNotOwned):
+		c.JSON(http.StatusForbidden, gin.H{"error": "仅作品作者可重新送审"})
+	case errors.Is(err, errMiniAppCannotResubmit), errors.Is(err, errMiniAppReviewPending):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重新送审失败"})
+	default:
+		s.notifyCaptainsOfAppSubmission(ctx, app, submission, user.DisplayName)
+		c.JSON(http.StatusCreated, gin.H{"versionId": submission.ID})
+	}
+}
+
 func (s *Server) handleReviewMiniAppVersion(c *gin.Context) {
 	reviewer, _ := auth.CurrentUser(c)
 	appID := strings.TrimSpace(c.Param("id"))
@@ -611,15 +927,6 @@ func (s *Server) handleReviewMiniAppVersion(c *gin.Context) {
 	ctx := c.Request.Context()
 	var app db.MiniApp
 	var ver db.MiniAppVersion
-	if err := s.gdb.WithContext(ctx).First(&app, "id = ?", appID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "应用不存在"})
-		return
-	}
-	if err := s.gdb.WithContext(ctx).First(&ver, "id = ? AND app_id = ?", verID, appID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "目标版本不存在"})
-		return
-	}
-
 	now := time.Now().UTC()
 	note := strings.TrimSpace(req.Note)
 	nextStatus := "rejected"
@@ -628,6 +935,24 @@ func (s *Server) handleReviewMiniAppVersion(c *gin.Context) {
 	}
 
 	err = s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 上传、审核、撤回与下架先锁同一作品，以串行处理待审状态。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, "id = ?", appID).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&ver, "id = ? AND app_id = ?", verID, appID).Error; err != nil {
+			return err
+		}
+		if !isPendingMiniAppRelease(ver) {
+			return errMiniAppReviewClosed
+		}
+		var reviewable db.MiniAppVersion
+		err := reviewableMiniAppReleases(tx, app.ID).Select("id").Where("id = ?", ver.ID).Take(&reviewable).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errMiniAppReviewClosed
+		}
+		if err != nil {
+			return err
+		}
 		if err := tx.Model(&ver).Updates(map[string]any{
 			"status":      nextStatus,
 			"reviewer_id": reviewer.UserID,
@@ -637,15 +962,25 @@ func (s *Server) handleReviewMiniAppVersion(c *gin.Context) {
 			return err
 		}
 		if req.Decision == "approve" {
-			return tx.Model(&app).Updates(map[string]any{
-				"status":            "published",
-				"active_version_id": ver.ID,
-				"updated_at":        now,
-			}).Error
+			if err := supersedeEarlierMiniAppReleases(tx, ver); err != nil {
+				return err
+			}
+			updates := miniAppMetadataUpdates(&app, toVersionDTO(ver).Manifest, ver.IconURL)
+			updates["status"] = "published"
+			updates["active_version_id"] = ver.ID
+			updates["updated_at"] = now
+			return tx.Model(&app).Updates(updates).Error
 		}
 		return nil
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "应用或目标版本不存在"})
+		return
+	case errors.Is(err, errMiniAppReviewClosed):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	case err != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新审核状态失败"})
 		return
 	}
@@ -684,17 +1019,6 @@ func (s *Server) handleUpdateMiniAppStatus(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
-	var app db.MiniApp
-	if err := s.gdb.WithContext(ctx).First(&app, "id = ?", appID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "应用不存在"})
-		return
-	}
-	if !user.IsCaptain && app.OwnerID != user.UserID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "仅作者或队长可执行此操作"})
-		return
-	}
-
 	updates := map[string]any{"updated_at": time.Now().UTC()}
 	if req.Status != "" {
 		if req.Status != "published" && req.Status != "suspended" && req.Status != "draft" {
@@ -713,19 +1037,51 @@ func (s *Server) handleUpdateMiniAppStatus(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本 ID"})
 			return
 		}
-		var ver db.MiniAppVersion
-		if err := s.gdb.WithContext(ctx).First(&ver, "id = ? AND app_id = ? AND status = ?", vid, appID, "approved").Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "仅可回滚到已审核通过的历史版本"})
-			return
-		}
 		updates["active_version_id"] = vid
 	}
 
-	if err := s.gdb.WithContext(ctx).Model(&app).Updates(updates).Error; err != nil {
+	err := s.gdb.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var app db.MiniApp
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, "id = ?", appID).Error; err != nil {
+			return err
+		}
+		if !user.IsCaptain && app.OwnerID != user.UserID {
+			return errMiniAppNotOwned
+		}
+		if vid, ok := updates["active_version_id"]; ok {
+			var ver db.MiniAppVersion
+			err := tx.First(&ver, "id = ? AND app_id = ? AND status = ?", vid, appID, "approved").Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errMiniAppRollbackVersion
+			}
+			if err != nil {
+				return err
+			}
+			for key, value := range miniAppMetadataUpdates(&app, toVersionDTO(ver).Manifest, ver.IconURL) {
+				updates[key] = value
+			}
+		}
+		if req.Status == "suspended" && app.Status != "suspended" {
+			if err := tx.Model(&db.MiniAppVersion{}).
+				Where("app_id = ? AND channel = ? AND status = ?", app.ID, "release", "pending").
+				Update("status", "withdrawn").Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&app).Updates(updates).Error
+	})
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "应用不存在"})
+	case errors.Is(err, errMiniAppNotOwned):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	case errors.Is(err, errMiniAppRollbackVersion):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case err != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新应用状态失败"})
-		return
+	default:
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) handleRecordMiniAppPlay(c *gin.Context) {
