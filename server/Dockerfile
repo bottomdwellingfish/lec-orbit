@@ -1,5 +1,5 @@
 # 多阶段轻量构建：NestJS 12 (@nestjs/platform-node) + TypeORM + Bun 1.4.4（兼容校园无 AVX2 CPU 与 Node 22+）
-ARG BUN_IMAGE=oven/bun:1.4.4-slim
+ARG BUN_IMAGE=oven/bun:1.4.4
 
 FROM ${BUN_IMAGE} AS builder
 WORKDIR /src
