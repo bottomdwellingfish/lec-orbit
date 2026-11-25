@@ -14,7 +14,10 @@ import { TitleBadgeList } from '@/components/TitleBadge';
 import { getOrbitClient } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
 import { useOrbitStore } from '@/stores/useOrbitStore';
+import { lazy, Suspense } from 'react';
 import styles from './PunchToday.module.css';
+
+const GlyphEmber = lazy(() => import('./GlyphEmber'));
 
 export function PunchTodayPage(): JSX.Element {
   const auth = useOrbitStore((s) => s.auth);
@@ -22,6 +25,7 @@ export function PunchTodayPage(): JSX.Element {
   const attendance = useOrbitStore((s) => s.attendance);
   const networkStatus = useOrbitStore((s) => s.networkStatus);
   const teamActive = useOrbitStore((s) => s.teamActive);
+  const frenzyActive = teamActive.length >= 8;
   const weeklyStats = useOrbitStore((s) => s.weeklyStats);
   const points = useOrbitStore((s) => s.points);
   const myTitles = useOrbitStore((s) => s.myTitles);
@@ -244,10 +248,16 @@ export function PunchTodayPage(): JSX.Element {
 
       <section className={styles.heroGrid}>
         <Card className={styles.heroCard} padding="large">
+          {frenzyActive && config.frenzyFlamesEnabled && <Suspense fallback={null}>
+            <GlyphEmber className={styles.emberBackground} backgroundColor="#faf5ff" mode="ink" interactive={false} glyphSize={8.8} height={0.7 * 2 / 3} quality={0.8} />
+          </Suspense>}
           <div className={styles.heroTop}>
-            <Tag tone={attendance?.isCheckedIn ? 'success' : 'neutral'} icon={<Clock3 size={14} />}>
+            <div className={styles.punchBadges}>
+            <Tag tone={attendance?.isCheckedIn ? 'warning' : 'neutral'} icon={<Clock3 size={14} />}>
               {attendance?.isCheckedIn ? '专注计时中' : '尚未签到'}
             </Tag>
+            {frenzyActive && <Tag tone="warning" icon={<Flame size={14} />}>狂热打卡</Tag>}
+            </div>
             <span className={styles.todayHint}>今日累计 {formatReadableDuration(todayTotalSeconds)}</span>
           </div>
 

@@ -294,6 +294,13 @@ export function SettingsPage(): JSX.Element {
         <div className={styles.settingList}>
           <div className={styles.settingRow}>
             <div>
+              <div className={styles.settingTitle}>狂热打卡符文火焰</div>
+              <div className={styles.settingDesc}>工作室同时在岗达到 8 人时显示火焰。关闭仅隐藏动画，不影响状态和积分加成。</div>
+            </div>
+            <Switch aria-label="狂热打卡符文火焰" checked={config.frenzyFlamesEnabled} onCheckedChange={(checked) => void updateConfig({ frenzyFlamesEnabled: checked })} />
+          </div>
+          <div className={styles.settingRow}>
+            <div>
               <div className={styles.settingTitle}>界面主题</div>
               <div className={styles.settingDesc}>跟随系统或固定使用浅色 / 深色 Liquid Glass 界面</div>
             </div>
