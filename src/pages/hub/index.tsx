@@ -55,6 +55,41 @@ import styles from './Hub.module.css';
 type HubFilterTab = 'all' | 'miniapp' | 'minigame' | 'mine' | 'pending';
 type EngineFilter = 'all' | MiniAppEngine;
 
+type WorkshopWork = { appId: string; name: string };
+type WorkshopAction = WorkshopWork & (
+  | { type: 'withdraw' | 'resubmit'; versionId: string; version: string }
+  | { type: 'suspend' }
+);
+
+const workshopActionLabels = {
+  withdraw: { title: '撤回送审', confirm: '确认撤回', success: '已撤回送审' },
+  resubmit: { title: '重新送审', confirm: '确认送审', success: '已重新送审' },
+  suspend: { title: '下架作品', confirm: '确认下架', success: '作品已下架' },
+};
+
+function describeWorkshopAction(action: WorkshopAction): string {
+  if (action.type === 'suspend') {
+    return `下架后，其他普通成员将无法从工坊打开《${action.name}》。待审更新会同时撤回，历史版本和存档会保留。`;
+  }
+  const build = `《${action.name}》v${action.version}`;
+  return action.type === 'withdraw'
+    ? `撤回后，${build} 将移出待审核队列。你可以从「我的作品」重新送审或上传新版本。`
+    : `将 ${build} 的原构建包提交给队长审核。`;
+}
+
+function getPendingRelease(item?: MiniAppCatalogItem) {
+  // Older servers expose only the latest version.
+  if (item?.pendingVersion !== undefined) return item.pendingVersion;
+  const latest = item?.latestVersion;
+  return latest?.channel === 'release' && latest.status === 'pending' ? latest : undefined;
+}
+
+function getCardVersion(item: MiniAppCatalogItem, tab: HubFilterTab) {
+  if (tab === 'pending') return getPendingRelease(item);
+  if (tab === 'mine') return item.latestVersion ?? item.activeVersion;
+  return item.activeVersion ?? item.latestVersion;
+}
+
 interface UnifiedHubCard {
   appId: string;
   name: string;
@@ -217,6 +252,7 @@ export function HubPage(): JSX.Element {
 
   // 上传 / GitHub 导入弹窗状态
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadTarget, setUploadTarget] = useState<WorkshopWork | null>(null);
   const [uploadSource, setUploadSource] = useState<'zip' | 'github'>('zip');
   const [zipInfo, setZipInfo] = useState<{
     filePath: string;
@@ -225,6 +261,9 @@ export function HubPage(): JSX.Element {
     manifest: OrbitAppManifest;
   } | null>(null);
   const [uploadChannel, setUploadChannel] = useState<'release' | 'preview'>('release');
+  const [workshopAction, setWorkshopAction] = useState<WorkshopAction | null>(null);
+  const [workshopActionSubmitting, setWorkshopActionSubmitting] = useState(false);
+  const [workshopActionError, setWorkshopActionError] = useState('');
   const [uploadChangelog, setUploadChangelog] = useState('');
   const [directPublish, setDirectPublish] = useState(false);
   const [uploadSubmitting, setUploadSubmitting] = useState(false);
@@ -239,11 +278,12 @@ export function HubPage(): JSX.Element {
     void refreshHubData();
   }, [refreshHubData]);
 
+  const dialogOpen = devOpen || uploadOpen || workshopAction !== null;
   useEffect(() => {
-    if (!devOpen && !uploadOpen) return;
+    if (!dialogOpen) return;
     pushOverlay();
     return () => popOverlay();
-  }, [devOpen, uploadOpen, pushOverlay, popOverlay]);
+  }, [dialogOpen, pushOverlay, popOverlay]);
 
   const workspaceApp = useMemo(
     () => hubRuntime.apps.find((a) => a.mode === 'workspace') ?? null,
@@ -251,7 +291,7 @@ export function HubPage(): JSX.Element {
   );
 
   const pendingCount = useMemo(
-    () => hubCatalog.filter((c) => c.latestVersion?.status === 'pending').length,
+    () => hubCatalog.filter((item) => getPendingRelease(item)).length,
     [hubCatalog],
   );
 
@@ -262,25 +302,28 @@ export function HubPage(): JSX.Element {
 
     // 1. 线上工坊目录
     for (const item of hubCatalog) {
-      const targetVer = item.activeVersion ?? item.latestVersion;
+      const targetVer = getCardVersion(item, tab);
       if (!targetVer) continue;
       seen.add(item.id);
       const inst = installedMap.get(item.id);
+      const versionManifest = (tab === 'pending' || tab === 'mine') && targetVer.manifest.id === item.id
+        ? targetVer.manifest
+        : undefined;
       cards.push({
         appId: item.id,
-        name: item.name,
-        type: item.type,
-        engine: item.engine,
+        name: versionManifest?.name ?? item.name,
+        type: versionManifest?.type ?? item.type,
+        engine: versionManifest?.engine ?? item.engine,
         version: targetVer.version,
-        description: item.description,
-        tags: item.tags,
+        description: versionManifest?.description ?? item.description,
+        tags: versionManifest?.tags ?? item.tags,
         defaultMode: targetVer.manifest.window.defaultMode,
         supportedModes: targetVer.manifest.window.supportedModes,
         crossOriginIsolated: targetVer.manifest.runtime.crossOriginIsolated,
         isBuiltin: false,
         isInstalled: Boolean(inst && inst.version === targetVer.version),
         installedSizeBytes: inst?.sizeBytes ?? targetVer.bundleSize,
-        iconUrl: item.iconUrl,
+        iconUrl: versionManifest ? targetVer.iconUrl ?? item.iconUrl : item.iconUrl,
         ownerName: item.ownerName,
         playCount: item.playCount,
         catalogItem: item,
@@ -308,7 +351,7 @@ export function HubPage(): JSX.Element {
     }
 
     return cards;
-  }, [hubBuiltins, hubCatalog, hubInstalled]);
+  }, [hubBuiltins, hubCatalog, hubInstalled, tab]);
 
   const filteredCards = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -319,7 +362,7 @@ export function HubPage(): JSX.Element {
         if (!card.catalogItem || card.catalogItem.ownerId !== auth.profile?.subject) return false;
       }
       if (tab === 'pending') {
-        if (card.catalogItem?.latestVersion?.status !== 'pending') return false;
+        if (!getPendingRelease(card.catalogItem)) return false;
       }
       if (engineFilter !== 'all' && card.engine !== engineFilter) return false;
       if (!needle) return true;
@@ -337,10 +380,7 @@ export function HubPage(): JSX.Element {
   const handleLaunchCard = async (card: UnifiedHubCard, explicitMode?: MiniAppDisplayMode) => {
     setLaunchingId(card.appId);
     try {
-      const targetVer =
-        tab === 'pending' || tab === 'mine'
-          ? card.catalogItem?.latestVersion ?? card.catalogItem?.activeVersion
-          : card.catalogItem?.activeVersion ?? card.catalogItem?.latestVersion;
+      const targetVer = card.catalogItem ? getCardVersion(card.catalogItem, tab) : undefined;
 
       const launched = await getOrbitClient().hub.launch({
         appId: card.appId,
@@ -441,12 +481,33 @@ export function HubPage(): JSX.Element {
     }
   };
 
+  const openUploadDialog = (target: WorkshopWork | null = null) => {
+    if (target || uploadTarget) {
+      setUploadSource('zip');
+      setZipInfo(null);
+      setGhUrl('');
+      setGhSha256('');
+      setGhManifestText('');
+      setUploadChangelog('');
+      setUploadChannel('release');
+      setDirectPublish(false);
+    }
+    setUploadTarget(target);
+    setUploadErr(null);
+    setUploadOpen(true);
+  };
+
   const handlePickZip = async () => {
     setUploadErr(null);
     const res = await getOrbitClient().hub.pickZipFile();
     if (res.cancelled) return;
     if (!res.ok || !res.filePath || !res.fileName || !res.manifest || res.sizeBytes == null) {
       setUploadErr(res.error || '构建包校验失败');
+      return;
+    }
+    if (uploadTarget && res.manifest.id !== uploadTarget.appId) {
+      setZipInfo(null);
+      setUploadErr(`构建包的作品 ID 是 ${res.manifest.id}，请选择 ID 为 ${uploadTarget.appId} 的构建包。`);
       return;
     }
     setZipInfo({
@@ -462,6 +523,12 @@ export function HubPage(): JSX.Element {
     setUploadErr(null);
     setUploadSubmitting(true);
     try {
+      const submission = {
+        targetAppId: uploadTarget?.appId,
+        channel: uploadTarget ? 'release' as const : uploadChannel,
+        changelog: uploadChangelog.trim(),
+        directPublish: !uploadTarget && auth.isAdmin && directPublish,
+      };
       if (uploadSource === 'zip') {
         if (!zipInfo) {
           setUploadErr('请先选择有效的 .zip / .lecapp 构建包');
@@ -477,9 +544,7 @@ export function HubPage(): JSX.Element {
         await orbitServerApi.uploadMiniAppZip({
           blob,
           fileName: fileData.fileName,
-          channel: uploadChannel,
-          changelog: uploadChangelog.trim(),
-          directPublish: auth.isAdmin && directPublish,
+          ...submission,
         });
       } else {
         let parsedJson: unknown;
@@ -490,13 +555,15 @@ export function HubPage(): JSX.Element {
           return;
         }
         const manifest = OrbitAppManifestSchema.parse(parsedJson);
+        if (uploadTarget && manifest.id !== uploadTarget.appId) {
+          setUploadErr(`清单的作品 ID 是 ${manifest.id}，请使用 ID 为 ${uploadTarget.appId} 的清单。`);
+          return;
+        }
         await orbitServerApi.importGitHubMiniApp({
           bundleUrl: ghUrl.trim(),
           bundleSha256: ghSha256.trim(),
-          channel: uploadChannel,
-          changelog: uploadChangelog.trim(),
-          directPublish: auth.isAdmin && directPublish,
           manifest,
+          ...submission,
         });
       }
 
@@ -506,9 +573,9 @@ export function HubPage(): JSX.Element {
       await refreshHubData();
       notifyToast({
         tone: 'success',
-        title: auth.isAdmin && directPublish ? '作品已直接发布上架' : '作品上传成功',
+        title: submission.directPublish ? '作品已直接发布上架' : uploadTarget ? '新版本已提交审核' : '作品上传成功',
         description:
-          auth.isAdmin && directPublish
+          submission.directPublish
             ? '全员现在即可在工坊中启动体验。'
             : '已提交至工坊版本队列，队长审核通过后全员可见。',
       });
@@ -523,7 +590,7 @@ export function HubPage(): JSX.Element {
     card: UnifiedHubCard,
     decision: 'approve' | 'reject',
   ) => {
-    const ver = card.catalogItem?.latestVersion;
+    const ver = getPendingRelease(card.catalogItem);
     if (!ver) return;
     try {
       await orbitServerApi.reviewMiniAppVersion(
@@ -538,11 +605,43 @@ export function HubPage(): JSX.Element {
         title: decision === 'approve' ? `已批准上架《${card.name}》` : `已驳回《${card.name}》`,
       });
     } catch (err) {
+      await refreshHubData();
       notifyToast({
         tone: 'error',
         title: '审核操作失败',
         description: err instanceof Error ? err.message : '未知错误',
       });
+    }
+  };
+
+  const openWorkshopAction = (action: WorkshopAction) => {
+    setWorkshopActionError('');
+    setWorkshopAction(action);
+  };
+
+  const submitWorkshopAction = async () => {
+    if (!workshopAction || workshopActionSubmitting) return;
+    setWorkshopActionSubmitting(true);
+    setWorkshopActionError('');
+    try {
+      if (workshopAction.type === 'withdraw') {
+        await orbitServerApi.withdrawMiniAppVersion(workshopAction.appId, workshopAction.versionId);
+      } else if (workshopAction.type === 'resubmit') {
+        await orbitServerApi.resubmitMiniAppVersion(workshopAction.appId, workshopAction.versionId);
+      } else {
+        await orbitServerApi.updateMiniAppStatus(workshopAction.appId, { status: 'suspended' });
+      }
+      await refreshHubData();
+      setWorkshopAction(null);
+      notifyToast({
+        tone: 'success',
+        title: workshopActionLabels[workshopAction.type].success,
+      });
+    } catch (err) {
+      await refreshHubData();
+      setWorkshopActionError(err instanceof Error ? err.message : '操作失败，请重试');
+    } finally {
+      setWorkshopActionSubmitting(false);
     }
   };
 
@@ -587,10 +686,7 @@ export function HubPage(): JSX.Element {
             variant="filled"
             size="small"
             icon={<Upload size={14} />}
-            onClick={() => {
-              setUploadErr(null);
-              setUploadOpen(true);
-            }}
+            onClick={() => openUploadDialog()}
           >
             上传 / 导入
           </Button>
@@ -705,7 +801,17 @@ export function HubPage(): JSX.Element {
       ) : (
         <div className={styles.grid}>
           {filteredCards.map((card) => {
-            const isPending = card.catalogItem?.latestVersion?.status === 'pending';
+            const pendingVersion = getPendingRelease(card.catalogItem);
+            const isMyWork = tab === 'mine' && card.catalogItem?.ownerId === auth.profile?.subject;
+            const isPublished = card.catalogItem?.status === 'published';
+            // Older servers can suspend apps without cancelling their review queue.
+            const canManageWork = isMyWork && card.catalogItem?.pendingVersion !== undefined;
+            const recoveryVersion = card.catalogItem?.recoveryVersion;
+            const canUploadNewVersion = !pendingVersion && (recoveryVersion || card.catalogItem?.status === 'suspended');
+            const isReviewTab = auth.isAdmin && tab === 'pending';
+            const launchVersion = card.catalogItem ? getCardVersion(card.catalogItem, tab) : undefined;
+            const opensPendingBuild = pendingVersion && launchVersion?.id === pendingVersion.id;
+            const canOpen = !auth.isAdmin || isReviewTab || isMyWork || !opensPendingBuild;
             const running = hubRuntime.apps.find((a) => a.appId === card.appId);
             return (
               <article key={card.appId} className={styles.card}>
@@ -740,7 +846,8 @@ export function HubPage(): JSX.Element {
                           SAB
                         </Tag>
                       )}
-                      {isPending && <Tag tone="warning">待审核</Tag>}
+                      {pendingVersion && <Tag tone="warning">待审核</Tag>}
+                      {card.catalogItem?.status === 'suspended' && <Tag tone="neutral">已下架</Tag>}
                     </div>
                   </div>
                 </div>
@@ -757,7 +864,7 @@ export function HubPage(): JSX.Element {
                   </span>
                 </div>
 
-                <div className={styles.cardActions}>
+                {canOpen && <div className={styles.cardActions}>
                   <Button
                     variant="filled"
                     size="small"
@@ -791,9 +898,61 @@ export function HubPage(): JSX.Element {
                       独立窗
                     </Button>
                   )}
-                </div>
+                </div>}
 
-                {auth.isAdmin && isPending && (
+                {canManageWork && (pendingVersion || isPublished || canUploadNewVersion) && (
+                  <div className={styles.reviewBar}>
+                    {pendingVersion && (
+                      <Button
+                        variant="glass"
+                        size="small"
+                        onClick={() => openWorkshopAction({
+                          type: 'withdraw',
+                          appId: card.appId,
+                          name: card.name,
+                          versionId: pendingVersion.id,
+                          version: pendingVersion.version,
+                        })}
+                      >
+                        撤回送审
+                      </Button>
+                    )}
+                    {isPublished && (
+                      <Button
+                        variant="glass"
+                        size="small"
+                        destructive
+                        onClick={() => openWorkshopAction({ type: 'suspend', appId: card.appId, name: card.name })}
+                      >
+                        下架作品
+                      </Button>
+                    )}
+                    {recoveryVersion && (
+                      <Button
+                        variant="filled"
+                        size="small"
+                        onClick={() => openWorkshopAction({
+                          type: 'resubmit',
+                          appId: card.appId,
+                          name: card.name,
+                          versionId: recoveryVersion.id,
+                          version: recoveryVersion.version,
+                        })}
+                      >
+                        重新送审
+                      </Button>
+                    )}
+                    {canUploadNewVersion && (
+                      <Button variant="glass" size="small"
+                        onClick={() => openUploadDialog({ appId: card.appId, name: card.name })}
+                      >
+                        上传新版本
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {isReviewTab && pendingVersion && (
                   <div className={styles.reviewBar}>
                     <Button
                       variant="filled"
@@ -819,6 +978,27 @@ export function HubPage(): JSX.Element {
           })}
         </div>
       )}
+
+      <Dialog
+        open={workshopAction !== null}
+        onOpenChange={(open) => { if (!open && !workshopActionSubmitting) setWorkshopAction(null); }}
+        size="small"
+        title={workshopAction ? workshopActionLabels[workshopAction.type].title : ''}
+        description={workshopAction ? describeWorkshopAction(workshopAction) : undefined}
+        dismissible={!workshopActionSubmitting}
+        footer={
+          <div className={styles.dialogFooter}>
+            <Button variant="glass" size="small" disabled={workshopActionSubmitting} onClick={() => setWorkshopAction(null)}>
+              取消
+            </Button>
+            <Button variant="filled" size="small" destructive={workshopAction?.type !== 'resubmit'} loading={workshopActionSubmitting} onClick={() => void submitWorkshopAction()}>
+              {workshopAction ? workshopActionLabels[workshopAction.type].confirm : '确认'}
+            </Button>
+          </div>
+        }
+      >
+        {workshopActionError && <Message tone="error">{workshopActionError}</Message>}
+      </Dialog>
 
       {/* 本地调试台 Dialog */}
       <Dialog
@@ -954,8 +1134,10 @@ export function HubPage(): JSX.Element {
         open={uploadOpen}
         onOpenChange={setUploadOpen}
         size="regular"
-        title="发布作品到 Orbit 工坊"
-        description="≤ 100 MB 构建包支持直传校园 RustFS；超过 100 MB 的重型小游戏可通过 GitHub Releases 链接零校园带宽导入。"
+        title={uploadTarget ? `上传《${uploadTarget.name}》的新版本` : '发布作品到 Orbit 工坊'}
+        description={uploadTarget
+          ? `请保留清单里的作品 ID「${uploadTarget.appId}」，建议提高 version 后重新打包。新版本由队长审核，历史版本和存档保留。`
+          : '≤ 100 MB 构建包支持直传校园 RustFS；超过 100 MB 的重型小游戏可通过 GitHub Releases 链接零校园带宽导入。'}
       >
         <form className={styles.dialogBody} onSubmit={handleSubmitUpload}>
           <SegmentedControl
@@ -1023,7 +1205,7 @@ export function HubPage(): JSX.Element {
             </div>
           )}
 
-          <div className={styles.modeSelectRow}>
+          {!uploadTarget && <div className={styles.modeSelectRow}>
             <span className={styles.fieldLabel}>发布通道</span>
             <SegmentedControl
               value={uploadChannel}
@@ -1033,7 +1215,7 @@ export function HubPage(): JSX.Element {
                 { value: 'preview', label: '仅体验版（作者可见）' },
               ]}
             />
-          </div>
+          </div>}
 
           <Input
             variant="fill"
@@ -1042,7 +1224,7 @@ export function HubPage(): JSX.Element {
             onValueChange={setUploadChangelog}
           />
 
-          {auth.isAdmin && uploadChannel === 'release' && (
+          {!uploadTarget && auth.isAdmin && uploadChannel === 'release' && (
             <label className={styles.checkboxRow}>
               <input
                 type="checkbox"
@@ -1060,7 +1242,7 @@ export function HubPage(): JSX.Element {
               取消
             </Button>
             <Button variant="filled" size="small" type="submit" loading={uploadSubmitting}>
-              {uploadSource === 'zip' ? '校验并上传' : '登记导入'}
+              {uploadTarget ? '提交审核' : uploadSource === 'zip' ? '校验并上传' : '登记导入'}
             </Button>
           </div>
         </form>

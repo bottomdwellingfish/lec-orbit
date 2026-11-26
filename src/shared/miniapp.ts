@@ -249,11 +249,12 @@ export interface MiniAppVersionItem {
   appId: string;
   version: string;
   channel: 'preview' | 'release';
-  status: 'pending' | 'approved' | 'rejected' | 'rolled_back';
+  status: 'pending' | 'approved' | 'rejected' | 'rolled_back' | 'withdrawn' | 'superseded';
   sourceType: 'rustfs' | 'github';
   bundleUrl: string;
   bundleSha256: string;
   bundleSize: number;
+  iconUrl?: string;
   manifest: OrbitAppManifest;
   changelog: string;
   uploaderId: string;
@@ -279,6 +280,8 @@ export interface MiniAppCatalogItem {
   playCount: number;
   activeVersion?: MiniAppVersionItem | null;
   latestVersion?: MiniAppVersionItem | null;
+  pendingVersion?: MiniAppVersionItem | null;
+  recoveryVersion?: MiniAppVersionItem;
   createdAt: string;
   updatedAt: string;
 }
