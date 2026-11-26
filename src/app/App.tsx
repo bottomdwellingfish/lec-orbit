@@ -142,19 +142,40 @@ export function App(): JSX.Element {
     const offBlog = orbit.blog.onStateChanged(setBlogState);
     const offUpdate = orbit.system.onUpdateStateChanged((info) => {
       setUpdateInfo(info);
+      // 后台静默下载就绪时发出一次温和提示（不突兀弹窗，左下角卡片同步常驻「重启以更新」）
+      if (
+        info.available &&
+        info.latestVersion &&
+        info.stage === 'downloaded' &&
+        notifiedVersionRef.current !== `ready:${info.latestVersion}`
+      ) {
+        notifiedVersionRef.current = `ready:${info.latestVersion}`;
+        notifyToast({
+          tone: 'success',
+          title: `Orbit v${info.latestVersion} 已就绪`,
+          description: '新版本已在后台静默下载完成，可随时在左下角点击重启更新。',
+          action: {
+            label: info.canAutoInstall ? '重启以更新' : '打开安装包',
+            onClick: () => void orbit.system.installUpdate(),
+          },
+        });
+        return;
+      }
+      // 仅当当前平台不支持后台自动静默下载（如只读 DMG / Linux）时，在发现新版时温和提示一次
       if (
         info.available &&
         info.latestVersion &&
         info.stage === 'available' &&
-        notifiedVersionRef.current !== info.latestVersion
+        !info.canAutoInstall &&
+        notifiedVersionRef.current !== `avail:${info.latestVersion}`
       ) {
-        notifiedVersionRef.current = info.latestVersion;
+        notifiedVersionRef.current = `avail:${info.latestVersion}`;
         const changeCount = info.changelog?.items.length ?? 0;
         const contribCount = info.changelog?.contributors.length ?? 0;
         const summaryHint =
           changeCount > 0
-            ? `包含 ${changeCount} 项改动${contribCount > 0 ? `（${contribCount} 位成员参与）` : ''}，点击查看更新详情与修复成员。`
-            : '包含最新功能与内置 LecDoc 更新，点击查看详情并应用内下载。';
+            ? `包含 ${changeCount} 项改动${contribCount > 0 ? `（${contribCount} 位成员参与）` : ''}，可在左下角查看详情并下载。`
+            : '包含最新功能与内置 LecDoc 更新，可在左下角查看详情并下载。';
         notifyToast({
           tone: 'info',
           title: `发现 Orbit 新版本 v${info.latestVersion}`,
@@ -571,7 +592,7 @@ export function App(): JSX.Element {
                       {updateInfo.stage === 'downloaded'
                         ? `v${updateInfo.latestVersion} 已就绪`
                         : updateInfo.stage === 'downloading'
-                          ? `正在下载 v${updateInfo.latestVersion}`
+                          ? `后台更新 v${updateInfo.latestVersion}`
                           : `新版本 v${updateInfo.latestVersion}`}
                     </span>
                     {updateInfo.stage === 'available' && (

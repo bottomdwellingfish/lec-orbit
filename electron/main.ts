@@ -840,6 +840,10 @@ app.whenReady().then(async () => {
     miniAppContainerManager?.syncTheme(configStore.get().theme);
   });
   windowManager.createMainWindow();
+  // 任意主窗口重新聚焦时节流复查更新（15 分钟内不重复请求），避免常驻托盘或重建窗口后错过发版
+  app.on('browser-window-focus', () => {
+    void updater?.checkIfStale(15 * 60 * 1000);
+  });
   trayManager.init(initialCfg.globalShortcut);
   trayManager.setFloatingBallEnabled(initialCfg.floatingBallEnabled);
   windowManager.syncFloatingBallEnabled(initialCfg.floatingBallEnabled);
