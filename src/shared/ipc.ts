@@ -59,6 +59,7 @@ export const OrbitConfigSchema = z.object({
   closeToTray: z.boolean().default(true),
   autoLaunch: z.boolean().default(false),
   remindersEnabled: z.boolean().default(true),
+  frenzyFlamesEnabled: z.boolean().default(true),
   floatingBallEnabled: z.boolean().default(true),
   floatingBallPosition: FloatingPositionSchema.optional(),
   lastLoginHandle: z.string().optional(),

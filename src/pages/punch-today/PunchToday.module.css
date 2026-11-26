@@ -86,16 +86,53 @@
 }
 
 .heroCard {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   min-height: 248px;
 }
 
+.heroCard > :global(.lg-card-body) {
+  border-radius: inherit;
+}
+
+.emberBackground {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.emberBackground > canvas {
+  border-radius: inherit;
+  opacity: 0.67;
+}
+
+:global([data-theme='dark']) .emberBackground > canvas {
+  opacity: 0.72;
+}
+
+.heroCard :is(.heroTop, .clockDisplay, .heroFooter) {
+  position: relative;
+  z-index: 1;
+}
+
+
 .heroTop {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.punchBadges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .todayHint {
