@@ -366,6 +366,8 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     const previous = get().auth;
     if (auth.authenticated !== previous.authenticated || auth.profile?.subject !== previous.profile?.subject) {
       blogsRequestId++;
+      consecutiveEnvMisses = 0;
+      lastEnvLeaveNotifiedAt = 0;
       void getOrbitClient().blog.deactivate();
       set({
         memberBlogs: [],
@@ -804,7 +806,16 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     if (!state.auth.authenticated || !state.attendance?.isCheckedIn || heartbeatInFlight) return;
     heartbeatInFlight = true;
     try {
-      const res = await punchApi.sendAttendanceKeepAlive(true);
+      // 默认优先读取系统缓存 BSS 列表（避免每 3 分钟主动 WlanScan 造成 CPU/语音丢包尖峰）；
+      // 仅当缓存结果未命中工作室环境时，再升级触发一次 force=true 主动复核，减少误报
+      let res = await punchApi.sendAttendanceKeepAlive(false);
+      if (res.environment?.wifiFingerprintEnabled && !res.environment.allowed) {
+        try {
+          res = await punchApi.sendAttendanceKeepAlive(true);
+        } catch {
+          // 主动复核失败时保留首次心跳结果
+        }
+      }
       const latest = get();
       if (!latest.attendance?.isCheckedIn) return;
 

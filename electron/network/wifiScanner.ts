@@ -24,7 +24,18 @@ interface SinglePassResult {
 function buildWindowsNativeWlanScript(triggerScan: boolean, waitMs: number): string {
   return `
 $ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
+$dllPath = Join-Path ([System.IO.Path]::GetTempPath()) 'orbit-wlan-scanner-v2.dll'
+$loaded = $false
+if (Test-Path -LiteralPath $dllPath) {
+  try {
+    Add-Type -Path $dllPath
+    $loaded = $true
+  } catch {
+    $loaded = $false
+  }
+}
+if (-not $loaded) {
+  $src = @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -64,9 +75,9 @@ public static class OrbitWlanScanner {
     public ulong ullHostTimestamp;
     public ushort usCapabilityInformation;
     public uint ulChCenterFrequency;
+    public uint uRateSetLength;
     [MarshalAs(UnmanagedType.ByValArray, SizeConst = 126)]
     public ushort[] usRateSet;
-    public uint uRateSetLength;
     public uint ulIeOffset;
     public uint ulIeSize;
   }
@@ -83,6 +94,18 @@ public static class OrbitWlanScanner {
   static extern uint WlanGetNetworkBssList(IntPtr hClientHandle, ref Guid pInterfaceGuid, IntPtr pDot11Ssid, int dot11BssType, bool bSecurityEnabled, IntPtr pReserved, out IntPtr ppWlanBssList);
   [DllImport("wlanapi.dll")]
   static extern void WlanFreeMemory(IntPtr pMemory);
+
+  static string EscapeJsonString(string input) {
+    if (string.IsNullOrEmpty(input)) return "";
+    var sb = new StringBuilder(input.Length);
+    foreach (char c in input) {
+      if (c == '\\\\') sb.Append("\\\\\\\\");
+      else if (c == '"') sb.Append("\\\\\\"");
+      else if (c < 0x20) continue;
+      else sb.Append(c);
+    }
+    return sb.ToString();
+  }
 
   public static string Scan(bool triggerScan, int waitMs) {
     uint negVer;
@@ -104,12 +127,17 @@ public static class OrbitWlanScanner {
       }
       uint lastErr = 0;
       if (triggerScan) {
+        bool anyScanOk = false;
         foreach (var g in guids) {
           var gg = g;
           uint sr = WlanScan(handle, ref gg, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-          if (sr != 0) lastErr = sr;
+          if (sr == 0) anyScanOk = true;
+          else lastErr = sr;
         }
-        if (waitMs > 0) Thread.Sleep(waitMs);
+        if (!anyScanOk && lastErr == 5) {
+          return "{\\"ok\\":false,\\"code\\":5,\\"stage\\":\\"scan\\",\\"networks\\":[]}";
+        }
+        if (anyScanOk && waitMs > 0) Thread.Sleep(waitMs);
       }
       var sb = new StringBuilder();
       sb.Append("{\\"ok\\":true,\\"code\\":0,\\"networks\\":[");
@@ -135,7 +163,7 @@ public static class OrbitWlanScanner {
               entry.dot11Bssid[3], entry.dot11Bssid[4], entry.dot11Bssid[5]);
             int ssidLen = (int)Math.Min(entry.dot11Ssid.uSSIDLength, 32u);
             string ssid = ssidLen > 0 ? Encoding.UTF8.GetString(entry.dot11Ssid.ucSSID, 0, ssidLen) : "";
-            string escSsid = ssid.Replace("\\\\", "\\\\\\\\").Replace("\\"", "\\\\\\"").Replace("\\r", "").Replace("\\n", "");
+            string escSsid = EscapeJsonString(ssid);
             if (!first) sb.Append(",");
             first = false;
             sb.Append("{\\"bssid\\":\\"").Append(bssid).Append("\\",\\"ssid\\":\\"").Append(escSsid).Append("\\",\\"rssi\\":").Append(entry.lRssi).Append("}");
@@ -154,6 +182,28 @@ public static class OrbitWlanScanner {
   }
 }
 '@
+  $tmpDll = Join-Path ([System.IO.Path]::GetTempPath()) ("orbit-wlan-scanner-" + [System.Guid]::NewGuid().ToString('N') + ".dll")
+  try {
+    Add-Type -TypeDefinition $src -OutputAssembly $tmpDll -OutputType Library
+    try {
+      if (-not (Test-Path -LiteralPath $dllPath)) {
+        [System.IO.File]::Move($tmpDll, $dllPath)
+      } else {
+        Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue
+      }
+    } catch {
+      Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $dllPath) {
+      Add-Type -Path $dllPath
+    } else {
+      Add-Type -TypeDefinition $src
+    }
+  } catch {
+    Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue
+    Add-Type -TypeDefinition $src
+  }
+}
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [OrbitWlanScanner]::Scan(${triggerScan ? '$true' : '$false'}, ${Math.max(0, Math.min(3000, waitMs))})
 `;
