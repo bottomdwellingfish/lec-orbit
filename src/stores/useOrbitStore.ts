@@ -33,7 +33,13 @@ import type {
   TeamWeeklyRankingItem,
 } from '@shared/punch';
 import { getOrbitClient } from '@/services/orbitClient';
-import { blogApi, BlogApiError, type MemberBlogItem, type MyBlogDetail } from '@/services/blogApi';
+import {
+  blogApi,
+  BlogApiError,
+  type BlogPublicConfig,
+  type MemberBlogItem,
+  type MyBlogDetail,
+} from '@/services/blogApi';
 import {
   orbitServerApi,
   type OrbitAnnouncement,
@@ -67,6 +73,7 @@ interface OrbitStoreState {
   docRecents: DocRecentItem[];
   memberBlogs: MemberBlogItem[];
   myBlog: MyBlogDetail | null;
+  blogPublicConfig: BlogPublicConfig | null;
   blogState: BlogViewState;
   selectedBlogUserId: string | null;
   pendingBlogUrl: string | null;
@@ -131,6 +138,7 @@ interface OrbitStoreState {
   consumeBlogUrl: () => string | null;
   clearBlogTarget: (userId: string) => void;
   refreshMemberBlogs: () => Promise<void>;
+  refreshBlogPublicConfig: (force?: boolean) => Promise<BlogPublicConfig | null>;
   setUpdateInfo: (info: UpdateCheckResult) => void;
   dismissUpdateBanner: () => void;
   updateConfig: (patch: OrbitConfigPatch) => Promise<void>;
@@ -175,6 +183,7 @@ let lastPunchSyncAt = 0;
 let lastOrbitSyncAt = 0;
 let lastCardSyncAt = 0;
 let blogsRequestId = 0;
+let blogConfigInFlight: Promise<BlogPublicConfig | null> | null = null;
 const MEMBER_BLOG_CACHE = 'blogs:members';
 
 function syncOverlayWithMain(state: {
@@ -197,6 +206,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
   docRecents: [],
   memberBlogs: [],
   myBlog: null,
+  blogPublicConfig: null,
   blogState: INITIAL_BLOG_VIEW_STATE,
   selectedBlogUserId: null,
   pendingBlogUrl: null,
@@ -450,6 +460,23 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         ...(denied ? { memberBlogs: [] } : {}),
       });
     }
+  },
+
+  refreshBlogPublicConfig: async (force = false) => {
+    const cached = get().blogPublicConfig;
+    if (cached && !force) return cached;
+    if (blogConfigInFlight) return blogConfigInFlight;
+    blogConfigInFlight = blogApi
+      .getPublicConfig()
+      .then((config) => {
+        set({ blogPublicConfig: config });
+        return config;
+      })
+      .catch(() => null)
+      .finally(() => {
+        blogConfigInFlight = null;
+      });
+    return blogConfigInFlight;
   },
 
   setHubRuntime: (hubRuntime) => set({ hubRuntime }),
@@ -846,12 +873,20 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         orbitServerOnline: true,
         orbitNotifications: [notif, ...s.orbitNotifications.filter((n) => n.id !== notif.id)],
       }));
+      const isBlogEvent = notif.sourceApp === 'lec-blog';
+      if (isBlogEvent && get().auth.authenticated && (get().activeTab === 'blogs' || get().memberBlogs.length > 0)) {
+        void get().refreshMemberBlogs();
+      }
+      const blogTargetUrl = isBlogEvent ? parseBlogUrl(notif.payload?.postUrl ?? notif.payload?.blogUrl) : null;
+      const blogAuthorId = typeof notif.payload?.userId === 'string' ? notif.payload.userId.trim() : '';
       void getOrbitClient().system.notify(notif.title, notif.body);
       notifyToast({
         tone: notif.eventType === 'doc.edit_request' ? 'info' : 'success',
         title: notif.title,
         description: notif.body,
-        action: { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
+        action: blogTargetUrl && blogAuthorId
+          ? { label: '前往阅读', onClick: () => get().openBlogTarget(blogAuthorId, blogTargetUrl.href) }
+          : { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
       });
       return;
     }

@@ -258,6 +258,10 @@
   gap: 12px;
 }
 
+.modeSwitch {
+  justify-self: start;
+}
+
 .postCard {
   min-width: 0;
 }
