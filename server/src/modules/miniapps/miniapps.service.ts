@@ -20,6 +20,7 @@ import { S3StorageService } from '../storage/s3-storage.service.js';
 import { MiniAppEntity } from './entities/mini-app.entity.js';
 import { MiniAppVersionEntity } from './entities/mini-app-version.entity.js';
 import { MiniAppKvEntity } from './entities/mini-app-kv.entity.js';
+import { MiniAppsEngagementService } from './miniapps-engagement.service.js';
 import {
   isAllowedGitHubReleaseUrl,
   MINIAPP_MAX_BUNDLE_BYTES,
@@ -69,6 +70,12 @@ export interface MiniAppCatalogDTO {
   status: string;
   featuredRank: number;
   playCount: number;
+  uniquePlayers?: number;
+  avgRating?: number | null;
+  ratingCount?: number;
+  myRatingChances?: number;
+  myRatingScore?: number | null;
+  activePlayerCount?: number;
   activeVersion?: MiniAppVersionDTO;
   latestVersion?: MiniAppVersionDTO;
   pendingVersion: MiniAppVersionDTO | null;
@@ -165,6 +172,7 @@ export class MiniAppsService {
     private readonly roster: RosterService,
     private readonly notifications: NotificationsService,
     private readonly functionsService?: FunctionsService,
+    private readonly engagementService?: MiniAppsEngagementService,
   ) {}
 
   private reviewableReleases(repo: Repository<MiniAppVersionEntity>, appId: string) {
@@ -319,6 +327,28 @@ export class MiniAppsService {
       }
       items.push(toCatalogDTO(a, active, latest, pending, recovery));
     }
+
+    if (this.engagementService && items.length > 0) {
+      const summaries = await this.engagementService
+        .getCatalogSummaries(
+          user.userId,
+          items.map((item) => item.id),
+        )
+        .catch(() => null);
+      if (summaries) {
+        for (const item of items) {
+          const s = summaries.get(item.id);
+          if (!s) continue;
+          item.uniquePlayers = s.uniquePlayers;
+          item.avgRating = s.avgRating;
+          item.ratingCount = s.ratingCount;
+          item.myRatingChances = item.ownerId === user.userId ? 0 : s.myRatingChances;
+          item.myRatingScore = s.myRatingScore;
+          item.activePlayerCount = s.activePlayerCount;
+        }
+      }
+    }
+
     return items;
   }
 

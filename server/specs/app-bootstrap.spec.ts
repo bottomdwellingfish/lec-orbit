@@ -58,8 +58,10 @@ describe('NestJS 12 (@nestjs/platform-node) HTTP 与 rawBody 冒烟测试', () =
       body: JSON.stringify({ matchId: 'm1', result: 'draw' }),
     });
     expect(badResp.status).toBe(400);
-    const badJson = (await badResp.json()) as { error: string };
+    const badJson = (await badResp.json()) as { error: string; message: string; statusCode: number };
     expect(badJson.error).toContain('无效的订单 ID');
+    expect(badJson.message).toContain('无效的订单 ID');
+    expect(badJson.statusCode).toBe(400);
 
     const rawStr = '{"matchId":"m1",  "result":"draw"}';
     const okResp = await fetch(

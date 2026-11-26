@@ -296,18 +296,18 @@ describe('周考核自动观测与跨周结算引擎（60 秒定时任务核心�
       { userId: 'pass', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'fail', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'newbie', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: startsAt + 3600_000, joinedAt: startsAt + 3600_000, status: 'active' as const },
-      { userId: 'senior', enrollYear: 2023, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
+      { userId: 'senior', enrollYear: 2022, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'disabled', enrollYear: 2024, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'disabled' as const },
     ];
 
-    let state = createAssessmentWeek(weekKey, startsAt + 60_000, members, enabledAt, [2025, 2024]);
+    let state = createAssessmentWeek(weekKey, startsAt + 60_000, members, enabledAt, [2025, 2024, 2023]);
     expect(state.coverageTrusted).toBe(true);
 
     // 模拟周内持续观测至周结束（步长 4 分钟 <= 5 分钟间隔）
     for (let ts = startsAt + 4 * 60_000; ts <= endsAt; ts += 4 * 60_000) {
-      state = observeAssessmentWeek(state, ts, members, [2025, 2024]);
+      state = observeAssessmentWeek(state, ts, members, [2025, 2024, 2023]);
     }
-    state = observeAssessmentWeek(state, endsAt, members, [2025, 2024]);
+    state = observeAssessmentWeek(state, endsAt, members, [2025, 2024, 2023]);
     expect(state.coverageTrusted).toBe(true);
 
     // 未满 5 小时保持 pending

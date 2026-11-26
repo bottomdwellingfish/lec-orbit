@@ -1,6 +1,6 @@
 /**
  * 考勤积分与乐币铸币联动服务：
- * - 实现狂热打卡时段判定（同团队同时在岗达到 8 人，整次有效签退享 +10% 乐币加成，对齐 LecPunch PR #15）；
+ * - 实现狂热打卡时段判定（同团队同时在岗达到 12 人，整次有效签退享 +10% 乐币加成）；
  * - 签退同步写入 punch_point_ledger_entries 审计表，并进程内调用 EconomyLedgerService.mintCoins()
  *   实时发放 coin 乐币与更新成员本周真实打卡分钟数（供 punch_minutes 赌约风控门槛使用）；
  * - GET /points/me 保持向下兼容老字段，同时返回全新规范的 wallet 乐币余额结构。

@@ -166,7 +166,16 @@ export class PunchAuthGuard implements CanActivate {
       await this.teamRepo.save(team);
     }
 
-    const currentYear = new Date().getUTCFullYear();
+    // 优先读取 LecSSO 花名册同步的真实入学年份，避免误用当前自然年（如将 2024 级错标为 2026 级）
+    const rosterRows = (await this.userRepo.query(
+      `SELECT enroll_year FROM orbit_members WHERE user_id = $1 LIMIT 1`,
+      [ssoUser.userId],
+    )) as Array<{ enroll_year: number | null }>;
+    const resolvedEnrollYear =
+      typeof rosterRows[0]?.enroll_year === 'number' && rosterRows[0].enroll_year >= 2015
+        ? rosterRows[0].enroll_year
+        : new Date().getUTCFullYear();
+
     const created = this.userRepo.create({
       id: newObjectIdHex(),
       logtoUserId: ssoUser.userId,
@@ -176,7 +185,7 @@ export class PunchAuthGuard implements CanActivate {
       teamId: team.id,
       role: ssoUser.isCaptain ? 'admin' : 'member',
       status: 'active',
-      enrollYear: currentYear,
+      enrollYear: resolvedEnrollYear,
       studentId: null,
       realName: ssoUser.displayName || null,
       avatarUrl: ssoUser.avatar || null,
