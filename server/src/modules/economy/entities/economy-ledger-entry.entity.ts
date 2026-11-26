@@ -14,6 +14,7 @@ export type EconomyLedgerReason =
   | 'shop_spend'
   | 'burn_fee'
   | 'admin_grant'
+  | 'admin_adjust'
   | 'migration_init';
 
 /**

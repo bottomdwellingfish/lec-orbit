@@ -75,6 +75,7 @@ const RawEnvSchema = z.object({
   PUNCH_S3_CARD_ASSETS_PREFIX: envStr('punch/cards/20261027-v1'),
   PUNCH_S3_REPORT_IMAGES_PREFIX: envStr('punch/reports'),
   REPORT_IMAGE_RETENTION_HOURS: envInt(3, 1, 168),
+  ASSESSMENT_START_WEEK: envStr(''),
   MEET_JWT_APP_ID: envStr(''),
   MEET_JWT_SECRET: envStr(''),
 
@@ -139,6 +140,7 @@ export interface AppConfig {
   };
   meetJwtAppId: string;
   meetJwtSecret: string;
+  assessmentStartWeek: string;
 
   githubToken: string;
 
@@ -207,6 +209,7 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     meetJwtAppId: parsed.MEET_JWT_APP_ID,
     meetJwtSecret: parsed.MEET_JWT_SECRET,
+    assessmentStartWeek: parsed.ASSESSMENT_START_WEEK,
 
     githubToken: parsed.GITHUB_TOKEN,
 

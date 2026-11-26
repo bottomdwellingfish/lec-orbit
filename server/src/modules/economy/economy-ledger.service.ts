@@ -450,31 +450,97 @@ export class EconomyLedgerService {
     });
   }
 
+  /** 事务内原子扣减乐币（供卡牌工坊等模块与自身状态表在同一 PG 事务内强一致提交）。 */
+  async spendCoinsTx(
+    manager: EntityManager,
+    input: InternalSpendInput,
+    now = new Date(),
+  ): Promise<{ alreadyProcessed: boolean; coinBalance: number }> {
+    const weekKey = getShanghaiWeekKey(now);
+    const existing = await manager.findOne(EconomyLedgerEntryEntity, {
+      where: { idempotencyKey: input.idempotencyKey },
+    });
+    const accounts = await this.lockAccountsTx(manager, [input.userId], now);
+    const acc = accounts.get(input.userId)!;
+
+    if (existing) {
+      return { alreadyProcessed: true, coinBalance: acc.coinBalance };
+    }
+    if (acc.coinBalance < input.amount) {
+      throw new BadRequestException(
+        `当前可用乐币不足（需要 ${input.amount}，可用 ${acc.coinBalance}）`,
+      );
+    }
+
+    acc.coinBalance -= input.amount;
+    acc.updatedAt = now;
+    await manager.save(EconomyAccountEntity, acc);
+
+    const entry = manager.create(EconomyLedgerEntryEntity, {
+      entryId: randomUUID(),
+      txGroupId: randomUUID(),
+      orderId: null,
+      appId: input.appId,
+      userId: input.userId,
+      counterpartyUserId: null,
+      asset: 'coin',
+      delta: -input.amount,
+      countsTowardLifetime: false,
+      weekKey,
+      reason: input.reason,
+      title: input.title,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: now,
+    });
+    await manager.save(EconomyLedgerEntryEntity, entry);
+
+    return { alreadyProcessed: false, coinBalance: acc.coinBalance };
+  }
+
   /** 仅限内部服务总线（卡牌抽卡 / 兑换站）使用的乐币消费销毁接口（按 idempotencyKey 强幂等）。 */
   async spendCoins(input: InternalSpendInput): Promise<{
     alreadyProcessed: boolean;
     coinBalance: number;
   }> {
     const now = new Date();
-    const weekKey = getShanghaiWeekKey(now);
+    return this.dataSource.transaction((manager) => this.spendCoinsTx(manager, input, now));
+  }
+
+  /** 管理员删除考勤记录时，按原铸币记录幂等冲正对应乐币（余额下限钳零）。 */
+  async reverseAttendanceCoins(input: {
+    userId: string;
+    attendanceSessionId: string;
+    weekKey: string;
+    fallbackCoins?: number;
+  }): Promise<{ reversedCoins: number; coinBalance: number }> {
+    const now = new Date();
+    const origKey = `punch:attendance:${input.attendanceSessionId}`;
+    const revKey = `punch:attendance-delete:${input.attendanceSessionId}`;
 
     return this.dataSource.transaction(async (manager) => {
-      const existing = await manager.findOne(EconomyLedgerEntryEntity, {
-        where: { idempotencyKey: input.idempotencyKey },
+      const existingRev = await manager.findOne(EconomyLedgerEntryEntity, {
+        where: { idempotencyKey: revKey },
       });
       const accounts = await this.lockAccountsTx(manager, [input.userId], now);
       const acc = accounts.get(input.userId)!;
-
-      if (existing) {
-        return { alreadyProcessed: true, coinBalance: acc.coinBalance };
-      }
-      if (acc.coinBalance < input.amount) {
-        throw new BadRequestException(
-          `当前可用乐币不足（需要 ${input.amount}，可用 ${acc.coinBalance}）`,
-        );
+      if (existingRev) {
+        return { reversedCoins: Math.abs(existingRev.delta), coinBalance: acc.coinBalance };
       }
 
-      acc.coinBalance -= input.amount;
+      const origEntry = await manager.findOne(EconomyLedgerEntryEntity, {
+        where: { idempotencyKey: origKey },
+      });
+      const targetAmount = Math.max(
+        0,
+        Math.round(origEntry ? Math.abs(origEntry.delta) : (input.fallbackCoins ?? 0)),
+      );
+      if (targetAmount <= 0) {
+        return { reversedCoins: 0, coinBalance: acc.coinBalance };
+      }
+
+      const actualDebit = Math.min(acc.coinBalance, targetAmount);
+      acc.coinBalance -= actualDebit;
+      acc.lifetimeEarnedCoins = Math.max(0, acc.lifetimeEarnedCoins - targetAmount);
       acc.updatedAt = now;
       await manager.save(EconomyAccountEntity, acc);
 
@@ -482,22 +548,42 @@ export class EconomyLedgerService {
         entryId: randomUUID(),
         txGroupId: randomUUID(),
         orderId: null,
-        appId: input.appId,
+        appId: 'lec-punch',
         userId: input.userId,
         counterpartyUserId: null,
         asset: 'coin',
-        delta: -input.amount,
+        delta: -actualDebit,
         countsTowardLifetime: false,
-        weekKey,
-        reason: input.reason,
-        title: input.title,
-        idempotencyKey: input.idempotencyKey,
+        weekKey: input.weekKey || getShanghaiWeekKey(now),
+        reason: 'admin_adjust',
+        title: `管理员删除考勤记录冲正（原铸币 ${targetAmount} 乐币）`,
+        idempotencyKey: revKey,
         createdAt: now,
       });
       await manager.save(EconomyLedgerEntryEntity, entry);
 
-      return { alreadyProcessed: false, coinBalance: acc.coinBalance };
+      return { reversedCoins: actualDebit, coinBalance: acc.coinBalance };
     });
+  }
+
+  /** 查询成员指定周的乐币入账总额与消费总额（供卡牌工坊与积分摘要展示）。 */
+  async getWeeklyCoinFlow(
+    userId: string,
+    weekKey: string,
+  ): Promise<{ earnedCoins: number; spentCoins: number }> {
+    const [row] = (await this.dataSource.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0)::int AS "earnedCoins",
+         COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0)::int AS "spentCoins"
+       FROM economy_ledger_entries
+       WHERE user_id = $1 AND asset = 'coin' AND week_key = $2`,
+      [userId, weekKey],
+    )) as [{ earnedCoins: number; spentCoins: number }];
+
+    return {
+      earnedCoins: Number(row?.earnedCoins ?? 0),
+      spentCoins: Number(row?.spentCoins ?? 0),
+    };
   }
 
   /** 读取成员当日/当周风控统计快照。 */

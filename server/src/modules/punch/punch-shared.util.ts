@@ -35,13 +35,15 @@ export function weeklyGoalSeconds(enrollYear: number): number {
   return enrollYear >= 2025 ? 28 * 3600 : 38 * 3600;
 }
 
-/** 校验入学年份合理性。 */
-export function isValidEnrollmentYear(value: unknown): value is number {
-  const refYear = Number(
-    new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric' }).format(
-      new Date(),
-    ),
-  );
+/** 校验入学年份合理性（支持按指定参考年份判定历史考核周）。 */
+export function isValidEnrollmentYear(value: unknown, referenceYear?: number): value is number {
+  const refYear =
+    referenceYear ??
+    Number(
+      new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric' }).format(
+        new Date(),
+      ),
+    );
   return typeof value === 'number' && Number.isInteger(value) && value >= 2000 && value <= refYear + 1;
 }
 
@@ -61,15 +63,26 @@ export function comprehensiveDurationSeconds(
   return total;
 }
 
-/** 计算参与周考核的近两届入学年份。 */
+/** 计算参与周考核的近两届入学年份（结合已持久化历史高水位，避免成员退出导致回退）。 */
 export function assessmentEnrollYears(
   enrollYears: readonly (number | null | undefined)[],
   previous: readonly number[] = [],
+  referenceYear?: number,
 ): number[] {
-  const valid = [...enrollYears, ...previous].filter((y): y is number => isValidEnrollmentYear(y));
+  const valid = [...enrollYears, ...previous].filter((y): y is number =>
+    isValidEnrollmentYear(y, referenceYear),
+  );
   if (valid.length === 0) return [];
   const latest = Math.max(...valid);
   return [latest, latest - 1];
+}
+
+/** 判断指定年级是否属于当周必考年级。 */
+export function requiresWeeklyAssessment(
+  enrollYear: number,
+  requiredYears: readonly number[],
+): boolean {
+  return Number.isInteger(enrollYear) && requiredYears.includes(enrollYear);
 }
 
 /** 将 ISO 周标识（如 2026-W47）解析为周一日期 YYYY-MM-DD；若本身已是 YYYY-MM-DD 则直接校验返回。 */

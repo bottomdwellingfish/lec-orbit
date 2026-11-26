@@ -88,7 +88,13 @@ export class PunchAttendanceController {
 
   @Get('admin/current-week-adjustment-context')
   @PunchAdminOnly()
-  getAdjustmentContext(@PunchCurrentUser() user: PunchAuthUser) {
+  getAdjustmentContext(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Query('userId') userId?: string,
+  ) {
+    if (userId?.trim()) {
+      return this.attendanceService.getAdjustmentContext(user, userId.trim());
+    }
     return this.attendanceService.listWeeklyAdjustments(user.teamId);
   }
 

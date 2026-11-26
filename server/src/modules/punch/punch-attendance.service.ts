@@ -31,6 +31,7 @@ import { PunchPointsService } from './punch-points.service.js';
 import {
   ATTENDANCE_MAX_SECONDS,
   FEVER_ACTIVE_THRESHOLD,
+  mondayKeyToIsoWeek,
   newObjectIdHex,
   parseIsoWeekToMondayKey,
   PUNCH_ERROR_CODES,
@@ -120,11 +121,13 @@ export class PunchAttendanceService {
         displayName: m?.displayName ?? '成员',
         realName: m?.realName ?? undefined,
         avatarUrl: m?.avatarUrl ?? undefined,
+        avatarBase64: m?.avatarBase64 ?? undefined,
         avatarColor: m?.avatarColor ?? undefined,
         avatarEmoji: m?.avatarEmoji ?? undefined,
         enrollYear: m?.enrollYear ?? 0,
         equippedTitleId: m?.equippedTitleId ?? undefined,
         titles: titlesByUserId?.get(s.userId) ?? [],
+        weekKey: s.weekKey,
         checkInAt: s.checkInAt.toISOString(),
         elapsedSeconds: this.getElapsedSeconds(s, now),
       };
@@ -287,18 +290,27 @@ export class PunchAttendanceService {
 
     const recordedFocusedSeconds = dayRows.reduce((s, r) => s + Number(r.focusedSeconds), 0);
     const manualAdjustmentSeconds = adjustments.reduce((s, a) => s + a.signedDurationSeconds, 0);
+    const totalFocusedSeconds = Math.max(0, recordedFocusedSeconds + manualAdjustmentSeconds);
+    const isoWeek = mondayKeyToIsoWeek(mondayKey);
+    const days = dayRows.map((r) => ({
+      date: r.date,
+      focusedMinutes: Math.floor(Number(r.focusedSeconds) / 60),
+      sessions: Number(r.sessions),
+      points: Math.floor(Number(r.focusedSeconds) / 60),
+    }));
 
     return {
+      week: isoWeek,
       weekKey: mondayKey,
-      days: dayRows.map((r) => ({
-        date: r.date,
-        focusedMinutes: Math.floor(Number(r.focusedSeconds) / 60),
-        sessions: Number(r.sessions),
-        points: Math.floor(Number(r.focusedSeconds) / 60),
-      })),
+      totalFocusedMinutes: Math.floor(totalFocusedSeconds / 60),
+      rawFocusedMinutes: Math.floor(recordedFocusedSeconds / 60),
+      adjustedMinutes: Math.trunc(manualAdjustmentSeconds / 60),
+      adjustmentsCount: adjustments.length,
+      checkedInDays: days.length,
+      days,
       recordedFocusedSeconds,
       manualAdjustmentSeconds,
-      totalFocusedSeconds: Math.max(0, recordedFocusedSeconds + manualAdjustmentSeconds),
+      totalFocusedSeconds,
       totalPoints: Math.floor(recordedFocusedSeconds / 60),
       adjustments: adjustments.map((a) => ({
         adjustmentId: a.id,
@@ -308,6 +320,49 @@ export class PunchAttendanceService {
         reason: a.reason,
         createdAt: a.createdAt.toISOString(),
       })),
+    };
+  }
+
+  /** 管理员打开调时弹窗前查询单人本周实时考勤时长与调时上下文。 */
+  async getAdjustmentContext(admin: PunchAuthUser, targetUserId: string) {
+    const target = await this.userRepo.findOne({ where: { id: targetUserId } });
+    if (!target) throw new NotFoundException('请选择有效成员');
+    if (target.teamId !== admin.teamId) {
+      throw new ForbiddenException({
+        code: PUNCH_ERROR_CODES.ATTENDANCE_CROSS_TEAM_FORBIDDEN,
+        message: '不可调整其他团队成员',
+      });
+    }
+    if (target.status !== 'active') {
+      throw new BadRequestException('不可调整已停用成员');
+    }
+
+    const now = new Date();
+    const weekKey = getShanghaiWeekKey(now);
+    const [[recRow], [adjRow]] = await Promise.all([
+      this.sessionRepo.query(
+        `SELECT COALESCE(SUM(duration_seconds), 0)::int AS secs
+         FROM punch_attendance_sessions
+         WHERE team_id = $1 AND user_id = $2 AND week_key = $3 AND status <> 'active'`,
+        [admin.teamId, target.id, weekKey],
+      ) as Promise<[{ secs: number }]>,
+      this.adjRepo.query(
+        `SELECT COALESCE(SUM(signed_duration_seconds), 0)::int AS secs
+         FROM punch_attendance_duration_adjustments
+         WHERE team_id = $1 AND user_id = $2 AND week_key = $3`,
+        [admin.teamId, target.id, weekKey],
+      ) as Promise<[{ secs: number }]>,
+    ]);
+
+    const recordedDurationSeconds = Number(recRow?.secs ?? 0);
+    const manualAdjustmentSeconds = Number(adjRow?.secs ?? 0);
+    return {
+      userId: target.id,
+      weekKey,
+      isoWeek: mondayKeyToIsoWeek(weekKey),
+      recordedDurationSeconds,
+      manualAdjustmentSeconds,
+      totalDurationSeconds: recordedDurationSeconds + manualAdjustmentSeconds,
     };
   }
 
@@ -374,11 +429,17 @@ export class PunchAttendanceService {
         [admin.teamId, target.id, weekKey],
       )) as [{ secs: number }];
 
-      const previousDurationSeconds = Math.max(
-        0,
-        Number(recRow?.secs ?? 0) + Number(adjRow?.secs ?? 0),
-      );
-      const resultingDurationSeconds = Math.max(0, previousDurationSeconds + signedSeconds);
+      const previousDurationSeconds = Number(recRow?.secs ?? 0) + Number(adjRow?.secs ?? 0);
+      if (previousDurationSeconds < 0 && input.operation !== 'add') {
+        throw new ConflictException('余额异常，只能增加时长补正至非负');
+      }
+      if (previousDurationSeconds + signedSeconds < 0) {
+        throw new BadRequestException({
+          code: 'ATTENDANCE_DURATION_CANNOT_BE_NEGATIVE',
+          message: '扣减后的当前周打卡时长不能低于 0',
+        });
+      }
+      const resultingDurationSeconds = previousDurationSeconds + signedSeconds;
       const id = newObjectIdHex();
 
       const adj = manager.create(PunchDurationAdjustmentEntity, {

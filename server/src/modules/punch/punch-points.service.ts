@@ -169,12 +169,8 @@ export class PunchPointsService {
       });
     }
 
-    const [[allRow], [weekRow], [manualAllRow], [manualWeekRow], wallet] = await Promise.all([
-      this.pointRepo.query(
-        `SELECT COALESCE(SUM(points), 0)::double precision AS total
-         FROM punch_point_ledger_entries WHERE team_id = $1 AND user_id = $2`,
-        [user.teamId, user.userId],
-      ) as Promise<[{ total: number }]>,
+    const economyUserId = user.ssoSub || user.userId;
+    const [[weekRow], [manualWeekRow], wallet, weeklyCoinFlow] = await Promise.all([
       this.pointRepo.query(
         `SELECT COALESCE(SUM(points), 0)::double precision AS total
          FROM punch_point_ledger_entries WHERE team_id = $1 AND user_id = $2 AND week_key = $3`,
@@ -182,21 +178,13 @@ export class PunchPointsService {
       ) as Promise<[{ total: number }]>,
       this.adjRepo.query(
         `SELECT COALESCE(SUM(signed_duration_seconds), 0)::int AS secs
-         FROM punch_attendance_duration_adjustments WHERE team_id = $1 AND user_id = $2`,
-        [user.teamId, user.userId],
-      ) as Promise<[{ secs: number }]>,
-      this.adjRepo.query(
-        `SELECT COALESCE(SUM(signed_duration_seconds), 0)::int AS secs
          FROM punch_attendance_duration_adjustments WHERE team_id = $1 AND user_id = $2 AND week_key = $3`,
         [user.teamId, user.userId, mondayKey],
       ) as Promise<[{ secs: number }]>,
-      this.economyLedger.getWalletSummary(user.ssoSub || user.userId),
+      this.economyLedger.getWalletSummary(economyUserId),
+      this.economyLedger.getWeeklyCoinFlow(economyUserId, mondayKey),
     ]);
 
-    const totalPoints = Math.max(
-      0,
-      Math.round(Number(allRow?.total ?? 0) + Math.trunc(Number(manualAllRow?.secs ?? 0) / 60)),
-    );
     const weekPoints = Math.max(
       0,
       Math.round(Number(weekRow?.total ?? 0) + Math.trunc(Number(manualWeekRow?.secs ?? 0) / 60)),
@@ -204,9 +192,18 @@ export class PunchPointsService {
 
     return {
       ledgerScope: 'unified-coin-v2' as const,
-      totalPoints: wallet.coinBalance > 0 ? wallet.coinBalance : totalPoints,
+      // 唯一真相源为统一 coin 乐币余额（余额归零时绝不错误回退历史积分）
+      totalPoints: wallet.coinBalance,
       week: mondayKeyToIsoWeek(mondayKey),
       weekPoints,
+      drawPoints: {
+        weekKey: mondayKey,
+        rule: 'unified-coin-v2' as const,
+        earned: weeklyCoinFlow.earnedCoins,
+        bonus: 0,
+        spent: weeklyCoinFlow.spentCoins,
+        balance: wallet.coinBalance,
+      },
       accrualRate: { focusedMinutes: 1, points: 1 },
       wallet,
       calculatedAt: new Date().toISOString(),

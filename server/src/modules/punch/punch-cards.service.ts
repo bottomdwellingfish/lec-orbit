@@ -1,13 +1,15 @@
 /**
- * 卡牌工坊服务（PostgreSQL TypeORM 版 + 原生接入统一 coin 乐币账本）：
- * - 完整保留 21 张卡池目录、保底计数、每周免费 2 抽、背包与赠送回执；
- * - 付费抽卡彻底告别旧 drawPoints 第二套货币，改为进程内直接消耗统一 coin 乐币（6 乐币/抽），
- *   并强制每周付费抽卡上限（默认 20 抽/周），兼顾老成员存量消耗与新老成员公平平衡。
+ * 卡牌工坊服务（PostgreSQL TypeORM 版 + 完整 21 张卡牌引擎 + 统一 coin 乐币原子账本）：
+ * - 100% 对齐 LecPunch 21 张卡效果引擎、加速卡签退自动结算、跨周归档、防御/赠卡/互动回执与已读确认；
+ * - 付费抽卡对接新版统一 coin 乐币（6 乐币/抽，每周免费 2 抽 + 赠礼抽优先，每周最多付费 20 抽），
+ *   与游戏状态更新在同一 PostgreSQL 事务内原子提交；
+ * - GET /cards/me 返回前端兼容的 points 对象（balance = 统一乐币余额，earned/spent = 本周乐币流水）。
  */
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import {
   BadRequestException,
+  Body,
   ConflictException,
   Controller,
   ForbiddenException,
@@ -19,112 +21,62 @@ import {
   NotFoundException,
   Param,
   Post,
-  Body,
   Res,
   ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository, type EntityManager } from 'typeorm';
 import { z } from 'zod';
 import { getShanghaiWeekKey } from '../../common/utils/week-key.js';
 import { APP_CONFIG, type AppConfig } from '../../config/env.config.js';
 import { EconomyLedgerService } from '../economy/economy-ledger.service.js';
 import { S3StorageService } from '../storage/s3-storage.service.js';
+import { PunchAssessmentWeekEntity } from './entities/punch-assessment.entities.js';
+import {
+  PunchAttendanceSessionEntity,
+  PunchDurationAdjustmentEntity,
+} from './entities/punch-attendance.entities.js';
 import {
   PunchCardActionArchiveEntity,
   PunchCardGameEntity,
+  PunchCardWeekArchiveEntity,
 } from './entities/punch-cards.entities.js';
 import { PunchUserEntity } from './entities/punch-core.entities.js';
 import { PunchAuthGuard, PunchCurrentUser, type PunchAuthUser } from './punch-auth.guard.js';
-import { newObjectIdHex } from './punch-shared.util.js';
+import {
+  advanceGameState,
+  applyGameAction,
+  ASSESSMENT_TARGET_CARDS,
+  CARD_CATALOG,
+  CARD_PITY_LIMITS,
+  COIN_COST_PER_DRAW,
+  createGameState,
+  getCardTargetMode,
+  getPlayerWeek,
+  normalizeGameState,
+  resolveInternalCardId,
+  seededCardRandom,
+  toPublicCardId,
+  WEEKLY_FREE_DRAWS,
+  WEEKLY_MAX_PAID_DRAWS,
+  type CardDefinition,
+  type CardRarity,
+  type GameContext,
+  type GameState,
+  type PlayerWeek,
+} from './punch-card-engine.js';
+import {
+  assessmentEnrollYears,
+  comprehensiveDurationSeconds,
+  isValidEnrollmentYear,
+  newObjectIdHex,
+} from './punch-shared.util.js';
+import { addShanghaiDays, shanghaiDayStartMs } from './punch-title-engine.js';
+import { PunchTitlesService } from './punch-titles.service.js';
 import { PunchUsersService } from './punch-users.service.js';
 
-export type CardRarity = 'N' | 'R' | 'SR' | 'SSR';
-
-export interface CardDefinition {
-  id: string;
-  name: string;
-  rarity: CardRarity;
-  type: string;
-  stat: string;
-  summary: string;
-  effect: string;
-  detail: string;
-}
-
-export const CARD_CATALOG: CardDefinition[] = [
-  { id: 'n-acceleration', name: '加速', rarity: 'N', type: '个人增益', stat: '+15%', summary: '让下一次认真，跑得更快一点。', effect: '下次有效签退获得该次有效时长 15% 的娱乐加成，最多 30 分钟。', detail: '作废打卡不触发、不消耗加速。' },
-  { id: 'n-reduce', name: '减时长', rarity: 'N', type: '随机扣时', stat: '−30 MIN', summary: '偷偷拨动指针，时间就溜走了。', effect: '随机选择一名同年级其他玩家，扣除 30 分钟娱乐时长。', detail: '不改变真实考勤记录。' },
-  { id: 'n-gamble', name: '我赌你的枪里没有子弹', rarity: 'N', type: '自身判定', stat: '50% · ±30 MIN', summary: '这次，运气站在哪一边？', effect: '50% 概率自己获得 30 分钟加成；50% 概率扣除 30 分钟。', detail: '先判定再处理防御。' },
-  { id: 'n-shield', name: '仁王盾', rarity: 'N', type: '被动防御', stat: 'BLOCK · N', summary: '小小盾牌，也要认真守护。', effect: '自动抵挡一次 N 级卡牌造成的扣时或不利判定结果。', detail: '触发后消耗。' },
-  { id: 'r-add', name: '加时卡', rarity: 'R', type: '指定增益', stat: '+30 MIN', summary: '把多一点时间，送给你。', effect: '给自己或指定一名同年级玩家增加 30 分钟娱乐时长。', detail: '可对自己或他人使用。' },
-  { id: 'r-steal', name: '顺手牵羊', rarity: 'R', type: '指定偷取', stat: 'STEAL 30', summary: '这三十分钟，我就收下啦。', effect: '指定一名同年级其他玩家娱乐时长 −30 分钟，自己 +30 分钟。', detail: '同步影响双方综合时长。' },
-  { id: 'r-mystery', name: '?', rarity: 'R', type: '随机换卡', stat: 'MYSTERY', summary: '下一张，会是什么呢？', effect: '按基础概率获得另一张卡，不能获得 ? 自身。', detail: '不消耗普通抽卡机会。' },
-  { id: 'r-blade', name: '名刀司命', rarity: 'R', type: '被动防御', stat: 'BLOCK · N–R', summary: '在坏运气落下前，轻轻截住。', effect: '自动抵挡一次 N～R 级对自己不利的卡牌效果。', detail: '触发后消耗。' },
-  { id: 'r-charity', name: '慈善家', rarity: 'R', type: '应考成员赠送', stat: 'SHARE 10%', summary: '把拥有的一点光，分给大家。', effect: '将自己正综合时长的 10% 平均转移给当前应考名单中的其他启用成员。', detail: '无正综合时长不能使用。' },
-  { id: 'r-skip', name: '乐不思蜀', rarity: 'R', type: '限时禁用', stat: 'PAUSE 1H', summary: '先坐下来，喝一杯再说。', effect: '指定一名成员 1 小时不能主动使用卡牌。', detail: '不影响打卡与抽卡。' },
-  { id: 'r-thief', name: '神偷奶爸', rarity: 'R', type: '转移赠送', stat: 'GIFT 30', summary: '拿来的时间，是给你的礼物。', effect: '从随机其他成员处转移 30 分钟送给指定成员。', detail: '供给方与接收方不能相同。' },
-  { id: 'sr-angel', name: '天使卡', rarity: 'SR', type: '同年级增益', stat: 'ALL +30', summary: '今天的好运，每个人都有份。', effect: '同年级正式玩家各获得 30 分钟娱乐加成。', detail: '含使用者自身。' },
-  { id: 'sr-chain', name: '铁索连环', rarity: 'SR', type: '关联状态', stat: 'LINK ×2', summary: '这一刻，你与我的时间相连。', effect: '绑定两名不同的同年级玩家，下一次娱乐时长变化同步。', detail: '同步后解除。' },
-  { id: 'sr-lightning', name: '雷电', rarity: 'SR', type: '顺序判定', stat: '50% · −60', summary: '沿着名单，等待第一道闪电。', effect: '同年级其他玩家依次 50% 判定，首个命中者扣 60 分钟。', detail: '首个命中即结束。' },
-  { id: 'sr-reflect', name: '反弹', rarity: 'SR', type: '被动反击', stat: 'RETURN ×1', summary: '这份坏心思，原路奉还。', effect: '将一次针对个人的负面效果反弹给原使用者。', detail: '触发后消耗。' },
-  { id: 'sr-famine', name: '兵粮寸断', rarity: 'SR', type: '获取限制', stat: 'LOCK 3H', summary: '补给暂停，先用好手里的牌。', effect: '指定一名成员 3 小时不能获得新卡。', detail: '不影响打卡与使用已有卡牌。' },
-  { id: 'sr-invasion', name: '南蛮入侵', rarity: 'SR', type: '群体攻击', stat: 'N / −15', summary: '小小远征，带走一点好运。', effect: '同年级其他玩家各随机失去一张 N 卡，否则扣 15 分钟。', detail: '允许扣为负数。' },
-  { id: 'sr-redking', name: '红桃 K', rarity: 'SR', type: '指定扣时', stat: '−30 MIN', summary: '锁定目标，亮出红桃王牌。', effect: '指定一名成员扣除 30 分钟娱乐时长。', detail: '可被反弹或无懈可击抵御。' },
-  { id: 'ssr-harvest', name: '五谷丰登', rarity: 'SSR', type: '同年级赠卡', stat: 'ALL +2 DRAWS', summary: '丰收的喜悦，要一起分享。', effect: '同年级正式玩家各获得 2 次额外抽卡机会。', detail: '当周有效。' },
-  { id: 'ssr-invincible', name: '无懈可击', rarity: 'SSR', type: '主动保护', stat: 'WARD 24H', summary: '此刻，光芒为你筑起结界。', effect: '保护自己 24 小时免疫负面卡牌效果。', detail: '跨周仍保留至到期。' },
-  { id: 'ssr-arrows', name: '万箭穿心', rarity: 'SSR', type: '群体与指定攻击', stat: '10% + STRIKE', summary: '万千星芒，汇于决定的一击。', effect: '其他同年级玩家各扣 10%（上限 15 分钟），指定一人额外扣损失总额一半。', detail: '不修改真实考勤记录。' },
-];
-
-const WEEKLY_FREE_DRAWS = 2;
-const WEEKLY_MAX_PAID_DRAWS = 20; // 每周最多用 coin 付费抽 20 次（防老成员靠存量无限抽爆）
-const COIN_COST_PER_DRAW = 6; // 单抽 6 乐币，十连 60 乐币
-const PITY_R = 10;
-const PITY_SR = 25;
-const PITY_SSR = 70;
-
-const ASSESSMENT_TARGET_CARD_IDS = new Set(['r-charity', 'sr-angel', 'ssr-harvest']);
-
-function toPublicCardId(internalId: string): string {
-  const idx = CARD_CATALOG.findIndex((c) => c.id === internalId);
-  return idx >= 0 ? `card-${String(idx + 1).padStart(2, '0')}` : internalId;
-}
-
-function resolveInternalCardId(rawId?: string): string | undefined {
-  if (!rawId) return undefined;
-  const trimmed = rawId.trim();
-  const matched = CARD_CATALOG.find(
-    (card, idx) => `card-${String(idx + 1).padStart(2, '0')}` === trimmed || card.id === trimmed,
-  );
-  return matched?.id;
-}
-
-function getCardTargetMode(id: string): 'none' | 'self-or-other' | 'other' | 'two' | 'recipient' {
-  if (id === 'r-add') return 'self-or-other';
-  if (id === 'sr-chain') return 'two';
-  if (id === 'r-thief') return 'recipient';
-  if (['r-steal', 'r-skip', 'sr-famine', 'sr-redking', 'ssr-arrows'].includes(id)) return 'other';
-  return 'none';
-}
-
-interface MemberCardState {
-  inventory: Record<string, number>;
-  discovered: string[];
-  pityR: number;
-  pitySR: number;
-  pitySSR: number;
-  weeks: Record<
-    string,
-    {
-      entertainmentSeconds: number;
-      freeUsed: number;
-      bonusDraws: number;
-      paidDrawsUsed: number;
-      spentCoins: number;
-    }
-  >;
-}
+export { CARD_CATALOG, type CardDefinition, type CardRarity };
 
 const CardActionSchema = z.object({
   action: z.enum(['draw', 'gift', 'use']),
@@ -137,51 +89,101 @@ const CardActionSchema = z.object({
 });
 
 const AckIdsSchema = z.object({
-  ids: z.array(z.string().min(1)).max(100),
+  ids: z.array(z.string().min(1)).min(1).max(100),
 });
 
-function pickCardByRarity(rarity: CardRarity): CardDefinition {
-  const pool = CARD_CATALOG.filter((c) => c.rarity === rarity);
-  return pool[randomInt(0, pool.length)];
+interface CardNoticePerson {
+  id: string;
+  username: string;
+  displayName: string;
 }
 
-function drawOneCard(member: MemberCardState): CardDefinition {
-  member.pityR += 1;
-  member.pitySR += 1;
-  member.pitySSR += 1;
+interface CardNoticeCard {
+  id: string;
+  name: string;
+  rarity: CardRarity;
+}
 
-  let rarity: CardRarity;
-  if (member.pitySSR >= PITY_SSR) {
-    rarity = 'SSR';
-  } else if (member.pitySR >= PITY_SR) {
-    rarity = 'SR';
-  } else if (member.pityR >= PITY_R) {
-    rarity = 'R';
-  } else {
-    const roll = randomInt(0, 1000);
-    if (roll < 15) rarity = 'SSR';
-    else if (roll < 95) rarity = 'SR';
-    else if (roll < 365) rarity = 'R';
-    else rarity = 'N';
-  }
+interface CardReceiptGift {
+  recipientId: string;
+  notice: {
+    at: string;
+    sender: CardNoticePerson;
+    card: CardNoticeCard;
+  };
+}
 
-  if (rarity === 'SSR') {
-    member.pitySSR = 0;
-    member.pitySR = 0;
-    member.pityR = 0;
-  } else if (rarity === 'SR') {
-    member.pitySR = 0;
-    member.pityR = 0;
-  } else if (rarity === 'R') {
-    member.pityR = 0;
-  }
+interface CardReceiptDefense {
+  recipientId: string;
+  notice: {
+    at: string;
+    events: Array<{
+      attacker: CardNoticePerson;
+      attackCard: CardNoticeCard;
+      defenseCard: CardNoticeCard;
+      outcome: 'blocked' | 'reflected';
+    }>;
+    randomlySelected?: boolean;
+    effects?: unknown[];
+  };
+}
 
-  const picked = pickCardByRarity(rarity);
-  member.inventory[picked.id] = (member.inventory[picked.id] ?? 0) + 1;
-  if (!member.discovered.includes(picked.id)) {
-    member.discovered.push(picked.id);
-  }
-  return picked;
+interface CardReceiptInteraction {
+  recipientId: string;
+  notice: {
+    at: string;
+    sender: CardNoticePerson;
+    card: CardNoticeCard;
+    randomlySelected?: boolean;
+    effects: Array<{
+      target: CardNoticePerson;
+      actualTarget?: CardNoticePerson;
+      kind: string;
+      outcome: string;
+      deltaSeconds?: number;
+      detail?: string;
+    }>;
+  };
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function stableDigest(value: unknown): string {
+  return sha256Hex(
+    JSON.stringify(value, (_key, item) =>
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? Object.fromEntries(
+            Object.keys(item as Record<string, unknown>)
+              .sort()
+              .map((k) => [k, (item as Record<string, unknown>)[k]]),
+          )
+        : item,
+    ),
+  );
+}
+
+function cardActionHash(input: {
+  action: string;
+  cardId?: string;
+  targetId?: string;
+  secondTargetId?: string;
+  count?: number;
+}): string {
+  return sha256Hex(
+    JSON.stringify({
+      action: input.action,
+      cardId: input.cardId ?? null,
+      targetId: input.targetId ?? null,
+      secondTargetId: input.secondTargetId ?? null,
+      ...(input.count !== undefined && input.count !== 1 ? { count: input.count } : {}),
+    }),
+  );
+}
+
+function futureIso(timestamp: number | undefined, now: number): string | null {
+  return timestamp && timestamp > now ? new Date(timestamp).toISOString() : null;
 }
 
 @Injectable()
@@ -192,60 +194,456 @@ export class PunchCardsService {
     private readonly gameRepo: Repository<PunchCardGameEntity>,
     @InjectRepository(PunchCardActionArchiveEntity)
     private readonly receiptRepo: Repository<PunchCardActionArchiveEntity>,
+    @InjectRepository(PunchCardWeekArchiveEntity)
+    private readonly weekArchiveRepo: Repository<PunchCardWeekArchiveEntity>,
+    @InjectRepository(PunchAttendanceSessionEntity)
+    private readonly sessionRepo: Repository<PunchAttendanceSessionEntity>,
+    @InjectRepository(PunchDurationAdjustmentEntity)
+    private readonly adjRepo: Repository<PunchDurationAdjustmentEntity>,
+    @InjectRepository(PunchAssessmentWeekEntity)
+    private readonly assessWeekRepo: Repository<PunchAssessmentWeekEntity>,
     @InjectRepository(PunchUserEntity)
     private readonly userRepo: Repository<PunchUserEntity>,
     private readonly usersService: PunchUsersService,
     private readonly economyLedger: EconomyLedgerService,
+    private readonly titlesService: PunchTitlesService,
     private readonly s3Storage: S3StorageService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
-  private ensureMemberState(
-    state: { members?: Record<string, MemberCardState> },
-    userId: string,
-    weekKey: string,
-  ): MemberCardState {
-    if (!state.members) state.members = {};
-    let m = state.members[userId];
-    if (!m) {
-      m = { inventory: {}, discovered: [], pityR: 0, pitySR: 0, pitySSR: 0, weeks: {} };
-      state.members[userId] = m;
-    }
-    if (!m.weeks[weekKey]) {
-      m.weeks[weekKey] = {
-        entertainmentSeconds: 0,
-        freeUsed: 0,
-        bonusDraws: 0,
-        paidDrawsUsed: 0,
-        spentCoins: 0,
-      };
-    }
-    return m;
-  }
-
-  async getMe(user: PunchAuthUser) {
-    const weekKey = getShanghaiWeekKey(new Date());
-    const [game, wallet, activeMembers] = await Promise.all([
-      this.gameRepo.findOne({ where: { teamId: user.teamId } }),
-      this.economyLedger.getWalletSummary(user.ssoSub || user.userId),
-      this.userRepo.find({ where: { teamId: user.teamId, status: 'active' } }),
+  /** 计算指定周团队内所有成员的基础秒数（有效打卡秒数 + 管理员手动调时秒数）。 */
+  private async getTeamWeekBaseSeconds(teamId: string, weekKey: string): Promise<Record<string, number>> {
+    const [recRows, adjRows] = await Promise.all([
+      this.sessionRepo.query(
+        `SELECT user_id AS "userId", COALESCE(SUM(duration_seconds), 0)::int AS secs
+         FROM punch_attendance_sessions
+         WHERE team_id = $1 AND week_key = $2 AND status = 'completed' AND duration_seconds > 0 AND duration_seconds < 18000
+         GROUP BY user_id`,
+        [teamId, weekKey],
+      ) as Promise<Array<{ userId: string; secs: number }>>,
+      this.adjRepo.query(
+        `SELECT user_id AS "userId", COALESCE(SUM(signed_duration_seconds), 0)::int AS secs
+         FROM punch_attendance_duration_adjustments
+         WHERE team_id = $1 AND week_key = $2
+         GROUP BY user_id`,
+        [teamId, weekKey],
+      ) as Promise<Array<{ userId: string; secs: number }>>,
     ]);
 
-    const state = (game?.state ?? {}) as { members?: Record<string, MemberCardState> };
-    const m = state.members?.[user.userId];
-    const w = m?.weeks?.[weekKey] ?? {
-      entertainmentSeconds: 0,
-      freeUsed: 0,
-      bonusDraws: 0,
-      paidDrawsUsed: 0,
-      spentCoins: 0,
-    };
+    const result: Record<string, number> = {};
+    for (const row of recRows) {
+      result[row.userId] = (result[row.userId] ?? 0) + Number(row.secs ?? 0);
+    }
+    for (const row of adjRows) {
+      result[row.userId] = (result[row.userId] ?? 0) + Number(row.secs ?? 0);
+    }
+    return result;
+  }
 
-    const discoveredSet = new Set(m?.discovered ?? []);
-    const pitySR = m?.pitySR ?? 0;
-    const pitySSR = m?.pitySSR ?? 0;
-    const freeRemaining = Math.max(0, WEEKLY_FREE_DRAWS - (w.freeUsed ?? 0));
-    const giftDraws = w.bonusDraws ?? 0;
+  /** 读取团队当前应考年级（合并历史已持久化的高水位年级，防止成员移除导致回退）。 */
+  private async resolveAssessmentYears(
+    teamId: string,
+    allMembers: Array<{ enrollYear: number }>,
+    weekKey: string,
+  ): Promise<number[]> {
+    const refYear = Number(weekKey.slice(0, 4));
+    const persisted = await this.assessWeekRepo.find({ where: { teamId } });
+    const prevYears: number[] = [];
+    for (const w of persisted) {
+      if (w.weekKey > weekKey) continue;
+      const req = (w.state as { requiredEnrollYears?: unknown[] } | null)?.requiredEnrollYears;
+      if (Array.isArray(req)) {
+        for (const y of req) {
+          if (isValidEnrollmentYear(y, refYear)) prevYears.push(y);
+        }
+      }
+    }
+    return assessmentEnrollYears(
+      allMembers.map((m) => m.enrollYear),
+      prevYears,
+      refYear,
+    );
+  }
+
+  /** 构建卡牌引擎执行所需的实时上下文。 */
+  private async buildContext(
+    teamId: string,
+    state: GameState,
+    random: () => number = () => {
+      throw new Error('Randomness requires an action');
+    },
+    actorCoinBalance?: number,
+  ): Promise<GameContext> {
+    const now = Date.now();
+    const week = getShanghaiWeekKey(new Date(now));
+    const sessionWeeks = new Set([week]);
+    for (const member of Object.values(state.members)) {
+      for (const [key, value] of Object.entries(member.weeks ?? {})) {
+        if (key <= week && value.accelerationAt !== undefined) sessionWeeks.add(key);
+      }
+    }
+
+    const [activeMembers, allMembers, baseSeconds, rawSessions] = await Promise.all([
+      this.userRepo.find({ where: { teamId, status: 'active' } }),
+      this.userRepo.find({ where: { teamId }, select: { id: true, enrollYear: true } }),
+      this.getTeamWeekBaseSeconds(teamId, week),
+      this.sessionRepo.find({
+        where: {
+          teamId,
+          weekKey: In([...sessionWeeks]),
+          status: 'completed',
+        },
+        select: {
+          id: true,
+          userId: true,
+          weekKey: true,
+          checkOutAt: true,
+          durationSeconds: true,
+        },
+      }),
+    ]);
+
+    const assessmentYears = await this.resolveAssessmentYears(teamId, allMembers, week);
+
+    return {
+      now,
+      week,
+      random,
+      actorCoinBalance,
+      assessmentYears,
+      players: activeMembers.map((m) => ({
+        id: m.id,
+        username: m.username,
+        name: m.displayName,
+        enrollYear: m.enrollYear,
+      })),
+      baseSeconds,
+      sessions: rawSessions
+        .filter(
+          (s) =>
+            s.checkOutAt &&
+            typeof s.durationSeconds === 'number' &&
+            s.durationSeconds > 0 &&
+            s.durationSeconds < 18_000,
+        )
+        .map((s) => ({
+          id: s.id,
+          userId: s.userId,
+          weekKey: s.weekKey,
+          checkOutAt: s.checkOutAt!.getTime(),
+          durationSeconds: s.durationSeconds!,
+        })),
+    };
+  }
+
+  /** 将已结束超过 5 小时且无待生效加速的周数据归档至 punch_card_week_archives。 */
+  private extractArchivableWeeks(
+    state: GameState,
+    now: number,
+  ): Array<{ userId: string; weekKey: string; week: PlayerWeek }> {
+    const archived: Array<{ userId: string; weekKey: string; week: PlayerWeek }> = [];
+    for (const [userId, member] of Object.entries(state.members)) {
+      for (const [weekKey, week] of Object.entries(member.weeks ?? {})) {
+        const endMs = shanghaiDayStartMs(addShanghaiDays(weekKey, 7), 0);
+        if (
+          archived.length < 100 &&
+          Number.isFinite(endMs) &&
+          now >= endMs + 5 * 3_600_000 &&
+          week.accelerationAt === undefined
+        ) {
+          archived.push({ userId, weekKey, week });
+          delete member.weeks[weekKey];
+        }
+      }
+    }
+    return archived;
+  }
+
+  private async persistArchivedWeeksTx(
+    manager: EntityManager,
+    teamId: string,
+    weeks: Array<{ userId: string; weekKey: string; week: PlayerWeek }>,
+  ): Promise<void> {
+    for (const item of weeks) {
+      await manager
+        .createQueryBuilder()
+        .insert()
+        .into(PunchCardWeekArchiveEntity)
+        .values({
+          id: newObjectIdHex(),
+          teamId,
+          userId: item.userId,
+          weekKey: item.weekKey,
+          contentHash: stableDigest(item.week),
+          week: item.week as unknown as never,
+        })
+        .orIgnore()
+        .execute();
+    }
+  }
+
+  /** 刷新团队卡牌状态（触发加速卡签退结算、延续跨周结界并归档已结束历史周）。 */
+  private async refreshTeamState(teamId: string): Promise<{ game: PunchCardGameEntity; state: GameState; ctx: GameContext }> {
+    const now = new Date();
+    const weekKey = getShanghaiWeekKey(now);
+
+    let existing = await this.gameRepo.findOne({ where: { teamId } });
+    if (!existing) {
+      existing = await this.gameRepo.save(
+        this.gameRepo.create({
+          id: newObjectIdHex(),
+          teamId,
+          revision: 0,
+          startWeek: weekKey,
+          state: createGameState() as unknown as Record<string, unknown>,
+          receipts: {},
+          pendingWrite: null,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+    }
+
+    const initialState = normalizeGameState(existing.state);
+    const ctx = await this.buildContext(teamId, initialState);
+    const nextState = structuredClone(initialState);
+    advanceGameState(nextState, ctx);
+    const archivable = this.extractArchivableWeeks(nextState, ctx.now);
+
+    if (archivable.length === 0 && JSON.stringify(nextState) === JSON.stringify(initialState)) {
+      return { game: existing, state: initialState, ctx };
+    }
+
+    const updated = await this.dataSource.transaction(async (manager) => {
+      const locked = await manager
+        .createQueryBuilder(PunchCardGameEntity, 'g')
+        .setLock('pessimistic_write')
+        .where('g.team_id = :teamId', { teamId })
+        .getOne();
+      if (!locked) return existing;
+      const lockedState = normalizeGameState(locked.state);
+      advanceGameState(lockedState, ctx);
+      const toArchive = this.extractArchivableWeeks(lockedState, ctx.now);
+      if (toArchive.length > 0) {
+        await this.persistArchivedWeeksTx(manager, teamId, toArchive);
+      }
+      locked.state = lockedState as unknown as Record<string, unknown>;
+      locked.revision += 1;
+      locked.updatedAt = new Date();
+      return manager.save(PunchCardGameEntity, locked);
+    });
+
+    return { game: updated, state: normalizeGameState(updated.state), ctx };
+  }
+
+  /** 加载当前成员最近 20 条卡牌动态（合并已归档回执与 legacy receipts）。 */
+  private async loadEvents(game: PunchCardGameEntity, actorId: string) {
+    const rows = await this.receiptRepo
+      .createQueryBuilder('r')
+      .where('r.team_id = :teamId', { teamId: game.teamId })
+      .andWhere(
+        `(r.actor_id = :uid
+          OR r.gift->>'recipientId' = :uid
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.defenses, '[]'::jsonb)) d WHERE d->>'recipientId' = :uid)
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.interactions, '[]'::jsonb)) i WHERE i->>'recipientId' = :uid))`,
+        { uid: actorId },
+      )
+      .orderBy('r.at', 'DESC')
+      .addOrderBy('r.receipt_key', 'ASC')
+      .take(40)
+      .getMany();
+
+    const combined = new Map<
+      string,
+      {
+        receiptKey: string;
+        actorId: string;
+        at: string;
+        result: { message?: string };
+        gift?: CardReceiptGift | null;
+        defenses?: CardReceiptDefense[] | null;
+        interactions?: CardReceiptInteraction[] | null;
+      }
+    >();
+
+    for (const r of rows) {
+      combined.set(r.receiptKey, {
+        receiptKey: r.receiptKey,
+        actorId: r.actorId,
+        at: r.at,
+        result: (r.result ?? {}) as { message?: string },
+        gift: (r.gift ?? null) as CardReceiptGift | null,
+        defenses: (r.defenses ?? null) as CardReceiptDefense[] | null,
+        interactions: (r.interactions ?? null) as CardReceiptInteraction[] | null,
+      });
+    }
+
+    const legacyReceipts = (game.receipts ?? {}) as Record<
+      string,
+      {
+        actorId?: string;
+        at?: string;
+        result?: { message?: string };
+        gift?: CardReceiptGift;
+        defenses?: CardReceiptDefense[];
+        interactions?: CardReceiptInteraction[];
+      }
+    >;
+    for (const [key, r] of Object.entries(legacyReceipts)) {
+      if (!r?.at) continue;
+      const related =
+        r.actorId === actorId ||
+        r.gift?.recipientId === actorId ||
+        r.defenses?.some((d) => d.recipientId === actorId) ||
+        r.interactions?.some((i) => i.recipientId === actorId);
+      if (related && !combined.has(key)) {
+        combined.set(key, {
+          receiptKey: key,
+          actorId: r.actorId ?? '',
+          at: r.at,
+          result: r.result ?? {},
+          gift: r.gift ?? null,
+          defenses: r.defenses ?? null,
+          interactions: r.interactions ?? null,
+        });
+      }
+    }
+
+    return [...combined.values()]
+      .sort((a, b) => b.at.localeCompare(a.at) || a.receiptKey.localeCompare(b.receiptKey))
+      .slice(0, 20)
+      .map((row) => {
+        const defenseMsg = row.defenses
+          ?.find((item) => item.recipientId === actorId)
+          ?.notice.events.map(
+            (event) =>
+              `${event.attacker.displayName}（${event.attacker.username}）使用「${event.attackCard.name}」；已自动消耗「${event.defenseCard.name}」${event.outcome === 'reflected' ? '反弹攻击' : '成功防御'}`,
+          )
+          .join('；');
+
+        const interactionMsg = row.interactions
+          ?.filter((item) => item.recipientId === actorId)
+          .map(
+            ({ notice }) =>
+              `${notice.sender.displayName}（${notice.sender.username}）对你使用「${notice.card.name}」；${notice.effects
+                .map((effect) =>
+                  effect.outcome === 'blocked'
+                    ? '防御或免疫抵消，未生效'
+                    : effect.kind === 'time' && effect.outcome !== 'no-effect'
+                      ? `${(effect.actualTarget ?? effect.target).displayName}${(effect.deltaSeconds ?? 0) < 0 ? '扣除' : '增加'} ${Math.abs(effect.deltaSeconds ?? 0) / 60} 分钟`
+                      : effect.detail ?? '未产生时长变化',
+                )
+                .join('；')}`,
+          )
+          .join('；');
+
+        const giftMsg =
+          row.gift?.recipientId === actorId
+            ? `收到 ${row.gift.notice.sender.displayName}（${row.gift.notice.sender.username}）赠送的「${row.gift.notice.card.name}」`
+            : undefined;
+
+        return {
+          id: row.receiptKey,
+          at: row.at,
+          message: defenseMsg || interactionMsg || giftMsg || row.result.message || '卡牌操作完成',
+        };
+      });
+  }
+
+  private async loadIncomingGifts(teamId: string, recipientId: string) {
+    const rows = await this.receiptRepo
+      .createQueryBuilder('r')
+      .where('r.team_id = :teamId', { teamId })
+      .andWhere("r.gift->>'recipientId' = :uid", { uid: recipientId })
+      .andWhere('r.gift_read_at IS NULL')
+      .orderBy('r.at', 'ASC')
+      .addOrderBy('r.receipt_key', 'ASC')
+      .take(20)
+      .getMany();
+
+    return rows
+      .filter((r) => r.gift)
+      .map((r) => ({ id: r.receiptKey, ...(r.gift as unknown as CardReceiptGift).notice }));
+  }
+
+  private async loadIncomingDefenses(teamId: string, recipientId: string) {
+    const rows = await this.receiptRepo
+      .createQueryBuilder('r')
+      .where('r.team_id = :teamId', { teamId })
+      .andWhere(
+        `EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.defenses, '[]'::jsonb)) d WHERE d->>'recipientId' = :uid)`,
+        { uid: recipientId },
+      )
+      .andWhere(`NOT (COALESCE(r.defense_read_by, '[]'::jsonb) @> :uidJson::jsonb)`, {
+        uidJson: JSON.stringify([recipientId]),
+      })
+      .orderBy('r.at', 'ASC')
+      .addOrderBy('r.receipt_key', 'ASC')
+      .take(20)
+      .getMany();
+
+    return rows.flatMap((r) => {
+      const delivery = ((r.defenses ?? []) as CardReceiptDefense[]).find(
+        (d) => d.recipientId === recipientId,
+      );
+      return delivery ? [{ id: r.receiptKey, ...delivery.notice }] : [];
+    });
+  }
+
+  private async loadIncomingInteractions(teamId: string, recipientId: string) {
+    const rows = await this.receiptRepo
+      .createQueryBuilder('r')
+      .where('r.team_id = :teamId', { teamId })
+      .andWhere(
+        `EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.interactions, '[]'::jsonb)) i WHERE i->>'recipientId' = :uid)`,
+        { uid: recipientId },
+      )
+      .andWhere(`NOT (COALESCE(r.interaction_read_by, '[]'::jsonb) @> :uidJson::jsonb)`, {
+        uidJson: JSON.stringify([recipientId]),
+      })
+      .orderBy('r.at', 'ASC')
+      .addOrderBy('r.receipt_key', 'ASC')
+      .take(20)
+      .getMany();
+
+    return rows.flatMap((r) => {
+      const delivery = ((r.interactions ?? []) as CardReceiptInteraction[]).find(
+        (i) => i.recipientId === recipientId,
+      );
+      return delivery ? [{ id: r.receiptKey, ...delivery.notice }] : [];
+    });
+  }
+
+  /** 构建完整 CardGameView（对接新版统一 coin 账本与完整互动回执）。 */
+  private async buildView(
+    game: PunchCardGameEntity,
+    state: GameState,
+    user: PunchAuthUser,
+    ctx: GameContext,
+  ) {
+    const week = getPlayerWeek(state, user.userId, ctx.week);
+    const player = state.members[user.userId];
+    const economyUserId = user.ssoSub || user.userId;
+
+    const [wallet, weeklyCoinFlow, events, incomingGifts, incomingDefenses, incomingInteractions] =
+      await Promise.all([
+        this.economyLedger.getWalletSummary(economyUserId),
+        this.economyLedger.getWeeklyCoinFlow(economyUserId, ctx.week),
+        this.loadEvents(game, user.userId),
+        this.loadIncomingGifts(user.teamId, user.userId),
+        this.loadIncomingDefenses(user.teamId, user.userId),
+        this.loadIncomingInteractions(user.teamId, user.userId),
+      ]);
+
+    const discoveredSet = new Set(player.discovered ?? []);
+    const freeRemaining = Math.max(0, WEEKLY_FREE_DRAWS - (week.freeUsed ?? 0));
+    const giftDraws = week.bonusDraws ?? 0;
+    const baseSec = ctx.baseSeconds[user.userId] ?? 0;
+    const comprehensiveSeconds = comprehensiveDurationSeconds(
+      0,
+      baseSec,
+      week.entertainmentSeconds ?? 0,
+    );
 
     const collection = CARD_CATALOG.map((card) => {
       const unlocked = discoveredSet.has(card.id);
@@ -253,7 +651,7 @@ export class PunchCardsService {
         id: toPublicCardId(card.id),
         rarity: card.rarity,
         unlocked,
-        quantity: m?.inventory?.[card.id] ?? 0,
+        quantity: player.inventory?.[card.id] ?? 0,
         ...(unlocked
           ? {
               name: card.name,
@@ -263,7 +661,7 @@ export class PunchCardsService {
               effect: card.effect,
               detail: card.detail,
               targetMode: getCardTargetMode(card.id),
-              targetScope: ASSESSMENT_TARGET_CARD_IDS.has(card.id)
+              targetScope: (ASSESSMENT_TARGET_CARDS as readonly string[]).includes(card.id)
                 ? ('assessment' as const)
                 : ('same-grade' as const),
               usable: !['n-shield', 'r-blade', 'sr-reflect'].includes(card.id),
@@ -272,272 +670,551 @@ export class PunchCardsService {
       };
     });
 
-    const enrollYears = [...new Set(activeMembers.map((u) => u.enrollYear).filter((y): y is number => typeof y === 'number'))].sort((a, b) => b - a);
-    const requiredEnrollYears = enrollYears.slice(0, 2);
-
     return {
       capacityLimited: false,
-      week: weekKey,
-      entertainmentSeconds: w.entertainmentSeconds ?? 0,
-      // 兼容旧前端字段名（freeRemaining / giftDraws / points / collection / players / statuses / events）
-      points: wallet.coinBalance,
+      week: ctx.week,
+      entertainmentSeconds: week.entertainmentSeconds ?? 0,
+      // 完整兼容旧前端 game.points.{balance,earned,spent,bonus,comprehensiveSeconds}，数值源为新版统一 coin 账本
+      points: {
+        rule: 'unified-coin-v2' as const,
+        comprehensiveSeconds,
+        earned: weeklyCoinFlow.earnedCoins,
+        bonus: 0,
+        spent: weeklyCoinFlow.spentCoins,
+        balance: wallet.coinBalance,
+      },
       freeRemaining,
       giftDraws,
       freeDrawsRemaining: freeRemaining,
       bonusDrawsRemaining: giftDraws,
-      weeklyPaidDrawsUsed: w.paidDrawsUsed ?? 0,
+      weeklyPaidDrawsUsed: week.paidDrawsUsed ?? 0,
       weeklyPaidDrawsLimit: WEEKLY_MAX_PAID_DRAWS,
       coinCostPerDraw: COIN_COST_PER_DRAW,
       pity: {
-        sinceSR: pitySR,
-        sinceSSR: pitySSR,
-        srRemaining: Math.max(1, PITY_SR - pitySR),
-        ssrRemaining: Math.max(1, PITY_SSR - pitySSR),
-        r: m?.pityR ?? 0,
-        sr: pitySR,
-        ssr: pitySSR,
-        limits: { r: PITY_R, sr: PITY_SR, ssr: PITY_SSR },
+        sinceSR: player.pitySR,
+        sinceSSR: player.pitySSR,
+        srRemaining: Math.max(1, CARD_PITY_LIMITS.sr - player.pitySR),
+        ssrRemaining: Math.max(1, CARD_PITY_LIMITS.ssr - player.pitySSR),
+        limits: { sr: CARD_PITY_LIMITS.sr, ssr: CARD_PITY_LIMITS.ssr },
       },
       collection,
-      players: activeMembers.map((member) => ({
+      players: ctx.players.map((member) => ({
         id: member.id,
         username: member.username,
-        displayName: member.displayName,
+        displayName: member.name,
         enrollYear: member.enrollYear,
       })),
-      requiredEnrollYears,
+      requiredEnrollYears: ctx.assessmentYears ?? [],
       statuses: {
-        acceleration: false,
-        immuneUntil: null,
-        lockedUntil: null,
-        starvedUntil: null,
+        acceleration: week.accelerationAt !== undefined,
+        immuneUntil: futureIso(week.immuneUntil, ctx.now),
+        lockedUntil: futureIso(week.lockedUntil, ctx.now),
+        starvedUntil: futureIso(week.starvedUntil, ctx.now),
       },
-      events: [],
-      incomingGifts: [],
-      incomingDefenses: [],
-      incomingInteractions: [],
+      events,
+      incomingGifts,
+      incomingDefenses,
+      incomingInteractions,
     };
+  }
+
+  async getMe(user: PunchAuthUser) {
+    const { game, state, ctx } = await this.refreshTeamState(user.teamId);
+    if (!ctx.players.some((p) => p.id === user.userId)) {
+      throw new ForbiddenException('当前账号不可参与卡牌活动');
+    }
+    return this.buildView(game, state, user, ctx);
   }
 
   async getMemberCards(teamId: string, targetUserId: string) {
     const game = await this.gameRepo.findOne({ where: { teamId } });
-    const state = (game?.state ?? {}) as { members?: Record<string, MemberCardState> };
-    const m = state.members?.[targetUserId];
-    const inventory = CARD_CATALOG.filter((c) => (m?.inventory?.[c.id] ?? 0) > 0).map((c) => ({
-      id: c.id,
+    const state = normalizeGameState(game?.state);
+    const m = state.members[targetUserId];
+    const items = CARD_CATALOG.filter((c) => (m?.inventory?.[c.id] ?? 0) > 0).map((c) => ({
+      id: toPublicCardId(c.id),
       name: c.name,
       rarity: c.rarity,
       quantity: m!.inventory[c.id],
+      type: c.type,
+      effect: c.effect,
+      detail: c.detail,
     }));
+    const total = items.reduce((sum, item) => sum + item.quantity, 0);
     return {
+      total,
+      items,
       discoveredCount: m?.discovered?.length ?? 0,
       totalCount: CARD_CATALOG.length,
-      inventory,
+      inventory: items,
     };
   }
 
-  async performAction(user: PunchAuthUser, input: z.infer<typeof CardActionSchema>) {
-    const now = new Date();
-    const weekKey = getShanghaiWeekKey(now);
-    const reqKey = input.requestKey || newObjectIdHex();
-    const receiptKey = `${user.userId}:${reqKey}`;
-    const reqHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+  /** 供统计/周考核/称号读取指定周团队全员卡牌娱乐秒数（含自动结算待触发加速 + 合并历史归档）。 */
+  async getTeamWeekEntertainment(teamId: string, weekKey: string): Promise<Record<string, number>> {
+    let game = await this.gameRepo.findOne({ where: { teamId } });
+    if (!game) return {};
+    const state = normalizeGameState(game.state);
+    const currentWeek = getShanghaiWeekKey(new Date());
+    if (
+      weekKey === currentWeek ||
+      Object.values(state.members).some((m) => m.weeks?.[weekKey]?.accelerationAt !== undefined)
+    ) {
+      game = (await this.refreshTeamState(teamId)).game;
+    }
+
+    const archived = await this.weekArchiveRepo.find({ where: { teamId, weekKey } });
+    const values: Record<string, number> = {};
+    for (const row of archived) {
+      const secs = Number((row.week as { entertainmentSeconds?: number } | null)?.entertainmentSeconds ?? 0);
+      if (Number.isFinite(secs)) values[row.userId] = secs;
+    }
+
+    const latestState = normalizeGameState(game.state);
+    for (const [uid, member] of Object.entries(latestState.members)) {
+      if (member.weeks?.[weekKey]) {
+        values[uid] = Number(member.weeks[weekKey].entertainmentSeconds ?? 0);
+      } else {
+        values[uid] ??= 0;
+      }
+    }
+    return values;
+  }
+
+  /** 供个人历史周统计读取成员全部历史周卡牌娱乐秒数（合并归档表 + 实时 state）。 */
+  async getMemberEntertainmentHistory(
+    teamId: string,
+    userId: string,
+  ): Promise<Record<string, number>> {
+    const existing = await this.gameRepo.findOne({ where: { teamId } });
+    if (!existing) return {};
+    const { state } = await this.refreshTeamState(teamId);
+    const archived = await this.weekArchiveRepo.find({ where: { teamId, userId } });
+    const result: Record<string, number> = {};
+    for (const row of archived) {
+      const secs = Number((row.week as { entertainmentSeconds?: number } | null)?.entertainmentSeconds ?? 0);
+      if (Number.isFinite(secs)) result[row.weekKey] = secs;
+    }
+    const member = state.members[userId];
+    for (const [wk, w] of Object.entries(member?.weeks ?? {})) {
+      result[wk] = Number(w.entertainmentSeconds ?? 0);
+    }
+    return result;
+  }
+
+  /** 执行抽卡 / 赠卡 / 使用卡牌（完整 21 张卡效果 + 事务内扣减统一 coin + 写入互动回执）。 */
+  async performActionWithView(user: PunchAuthUser, input: z.infer<typeof CardActionSchema>) {
+    const reqKey = input.requestKey?.trim() || randomUUID();
+    const receiptKey = sha256Hex(`${user.userId}:${reqKey}`);
+    const internalCardId = input.cardId ? resolveInternalCardId(input.cardId) : undefined;
+    if (input.cardId && !internalCardId) {
+      throw new BadRequestException('卡片不存在');
+    }
+    if (input.action === 'draw' && (input.cardId || input.targetId || input.secondTargetId)) {
+      throw new BadRequestException('抽卡不能指定卡片或目标');
+    }
+
+    const rawTarget = input.targetId?.trim() || input.targetMemberKey?.trim();
+    const resolvedTargetId = rawTarget
+      ? (this.usersService.resolveMemberKey(rawTarget) ?? rawTarget)
+      : undefined;
+    const resolvedSecondTargetId = input.secondTargetId?.trim()
+      ? (this.usersService.resolveMemberKey(input.secondTargetId.trim()) ?? input.secondTargetId.trim())
+      : undefined;
+
+    const reqHash = cardActionHash({
+      action: input.action,
+      cardId: input.cardId,
+      targetId: resolvedTargetId,
+      secondTargetId: resolvedSecondTargetId,
+      count: input.count,
+    });
 
     const existingReceipt = await this.receiptRepo.findOne({
       where: { teamId: user.teamId, receiptKey },
     });
     if (existingReceipt) {
       if (existingReceipt.hash !== reqHash) {
-        throw new ConflictException('重复的 requestKey 但操作参数不一致');
+        throw new ConflictException('同一操作编号不能用于不同请求');
       }
-      return existingReceipt.result;
+      return { result: existingReceipt.result, state: await this.getMe(user) };
     }
 
-    return this.dataSource.transaction(async (manager) => {
-      let game = await manager
-        .createQueryBuilder(PunchCardGameEntity, 'g')
-        .setLock('pessimistic_write')
-        .where('g.team_id = :teamId', { teamId: user.teamId })
-        .getOne();
+    const economyUserId = user.ssoSub || user.userId;
+    const walletBefore = await this.economyLedger.getWalletSummary(economyUserId);
+    const seed = `${user.teamId}:${receiptKey}:${reqHash}`;
+    const random = seededCardRandom(
+      this.cfg.internalServiceToken || 'lec-orbit-cards-seed',
+      seed,
+    );
 
-      if (!game) {
-        game = manager.create(PunchCardGameEntity, {
+    const { resultView, savedGame, savedState, ctx } = await this.dataSource.transaction(
+      async (manager) => {
+        const now = new Date();
+        const weekKey = getShanghaiWeekKey(now);
+
+        let game = await manager
+          .createQueryBuilder(PunchCardGameEntity, 'g')
+          .setLock('pessimistic_write')
+          .where('g.team_id = :teamId', { teamId: user.teamId })
+          .getOne();
+
+        if (!game) {
+          game = manager.create(PunchCardGameEntity, {
+            id: newObjectIdHex(),
+            teamId: user.teamId,
+            revision: 0,
+            startWeek: weekKey,
+            state: createGameState() as unknown as Record<string, unknown>,
+            receipts: {},
+            pendingWrite: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        const state = normalizeGameState(game.state);
+        const context = await this.buildContext(
+          user.teamId,
+          state,
+          random,
+          walletBefore.coinBalance,
+        );
+        if (!context.players.some((p) => p.id === user.userId)) {
+          throw new ForbiddenException('当前账号不可参与卡牌活动');
+        }
+
+        let engineRes;
+        try {
+          engineRes = applyGameAction(
+            state,
+            user.userId,
+            {
+              action: input.action,
+              count: input.count,
+              cardId: internalCardId,
+              targetId: resolvedTargetId,
+              secondTargetId: resolvedSecondTargetId,
+            },
+            context,
+          );
+        } catch (err) {
+          throw new BadRequestException(err instanceof Error ? err.message : '卡牌操作失败');
+        }
+
+        // 若存在付费抽卡，在同一 PG 事务内原子扣减统一 coin 乐币
+        if (input.action === 'draw' && (engineRes.spentCoins ?? 0) > 0) {
+          const count = input.count ?? 1;
+          await this.economyLedger.spendCoinsTx(
+            manager,
+            {
+              userId: economyUserId,
+              amount: engineRes.spentCoins!,
+              reason: 'card_draw',
+              title: `卡牌工坊${count === 10 ? '十连抽' : '单抽'}（付费 ${engineRes.paidDraws} 抽）`,
+              idempotencyKey: `punch:card-draw:${user.teamId}:${receiptKey}`,
+              appId: 'lec-punch-cards',
+            },
+            now,
+          );
+        }
+
+        const person = (id: string): CardNoticePerson => {
+          const member = context.players.find((p) => p.id === id);
+          if (!member) throw new BadRequestException('结算对象不在当前团队');
+          return { id, username: member.username, displayName: member.name || member.username };
+        };
+
+        const historicalSourceIds = [
+          ...new Set(
+            (engineRes.effects ?? []).flatMap((e) =>
+              e.sourceId && !context.players.some((p) => p.id === e.sourceId) ? [e.sourceId] : [],
+            ),
+          ),
+        ];
+        const historicalSources =
+          historicalSourceIds.length > 0
+            ? await this.userRepo.find({
+                where: { teamId: user.teamId, id: In(historicalSourceIds) },
+              })
+            : [];
+
+        const sourcePerson = (id: string): CardNoticePerson => {
+          if (context.players.some((p) => p.id === id)) return person(id);
+          const m = historicalSources.find((item) => item.id === id);
+          return {
+            id,
+            username: m?.username ?? `历史成员 ID: ${id}`,
+            displayName: m?.displayName || m?.username || '原连环施卡者',
+          };
+        };
+
+        const noticeCard = (id: string): CardNoticeCard => {
+          const entry = CARD_CATALOG.find((item) => item.id === id)!;
+          return { id: toPublicCardId(id), name: entry.name, rarity: entry.rarity };
+        };
+
+        const effects = engineRes.effects?.map(
+          ({ targetId, actualTargetId, sourceId, sourceCardId, ...rest }) => {
+            const sourceCard = sourceCardId
+              ? CARD_CATALOG.find((item) => item.id === sourceCardId)
+              : undefined;
+            return {
+              ...rest,
+              target: person(targetId),
+              ...(actualTargetId ? { actualTarget: sourcePerson(actualTargetId) } : {}),
+              ...(sourceId && sourceCard
+                ? {
+                    source: {
+                      user: sourcePerson(sourceId),
+                      card: {
+                        id: toPublicCardId(sourceCard.id),
+                        name: sourceCard.name,
+                        rarity: sourceCard.rarity,
+                      },
+                    },
+                  }
+                : {}),
+            };
+          },
+        );
+
+        const card = internalCardId
+          ? CARD_CATALOG.find((item) => item.id === internalCardId)
+          : undefined;
+        const actionCard = card
+          ? { id: toPublicCardId(card.id), name: card.name, rarity: card.rarity }
+          : undefined;
+
+        const descriptions = effects?.map((effect) => {
+          const name = `${effect.target.displayName}（${effect.target.username}）`;
+          if (effect.outcome === 'blocked') return `${name}：被防御或免疫抵消`;
+          if (effect.outcome === 'no-effect') return `${name}：${effect.detail ?? '未产生时长变化'}`;
+          const outcome =
+            effect.kind === 'time'
+              ? `${(effect.deltaSeconds ?? 0) < 0 ? '扣除' : '增加'} ${Math.abs(effect.deltaSeconds ?? 0) / 60} 分钟`
+              : effect.detail;
+          return `${name}：${effect.outcome === 'reflected' ? `反弹至 ${effect.actualTarget!.displayName}（${effect.actualTarget!.username}），` : ''}${outcome}`;
+        });
+
+        const result = {
+          action: input.action,
+          message: actionCard
+            ? `${input.action === 'gift' ? '已赠送' : '已使用'}「${actionCard.name}」。${descriptions?.join('；') ?? ''}`
+            : engineRes.message,
+          ...(actionCard ? { actionCard } : {}),
+          ...(effects ? { effects } : {}),
+          ...(engineRes.gainedCardId ? { gainedCardId: toPublicCardId(engineRes.gainedCardId) } : {}),
+          ...(engineRes.gainedCardIds
+            ? { gainedCardIds: engineRes.gainedCardIds.map(toPublicCardId) }
+            : {}),
+          ...(engineRes.drawAnimation ? { drawAnimation: engineRes.drawAnimation } : {}),
+          ...(engineRes.ssrPity !== undefined ? { ssrPity: engineRes.ssrPity } : {}),
+          ...(engineRes.drawCount
+            ? { drawCount: engineRes.drawCount, radianceCount: engineRes.radianceCount }
+            : {}),
+          ...(engineRes.paidDraws !== undefined
+            ? { paidDraws: engineRes.paidDraws, spentCoins: engineRes.spentCoins }
+            : {}),
+        };
+
+        const at = new Date(context.now).toISOString();
+        const defenseByRecipient = new Map<string, CardReceiptDefense>();
+        for (const defense of engineRes.defenses ?? []) {
+          const delivery = defenseByRecipient.get(defense.userId) ?? {
+            recipientId: defense.userId,
+            notice: { at, events: [] },
+          };
+          delivery.notice.events.push({
+            attacker: sourcePerson(defense.attackerId),
+            attackCard: noticeCard(defense.attackCardId),
+            defenseCard: noticeCard(defense.defenseCardId),
+            outcome: defense.outcome,
+          });
+          defenseByRecipient.set(defense.userId, delivery);
+        }
+
+        const interactions: CardReceiptInteraction[] = [];
+        if (input.action === 'use' && actionCard) {
+          const recipients = new Set(
+            (effects ?? [])
+              .flatMap((e) => [e.target.id, e.actualTarget?.id])
+              .filter((id): id is string => Boolean(id && id !== user.userId)),
+          );
+          for (const recipientId of new Set([...recipients, ...defenseByRecipient.keys()])) {
+            const ownEffects =
+              effects?.filter(
+                (e) => e.target.id === recipientId || e.actualTarget?.id === recipientId,
+              ) ?? [];
+            const selection = ownEffects.some(
+              (e) => e.target.id === recipientId && e.randomTarget,
+            )
+              ? { randomlySelected: true }
+              : {};
+            const defended = defenseByRecipient.get(recipientId);
+            if (defended) {
+              Object.assign(defended.notice, selection, { effects: ownEffects });
+            } else {
+              const source = ownEffects[0]?.source;
+              const sameSource =
+                source &&
+                ownEffects.every(
+                  (e) =>
+                    e.source?.user.id === source.user.id && e.source.card.id === source.card.id,
+                );
+              interactions.push({
+                recipientId,
+                notice: {
+                  at,
+                  sender: sameSource ? source.user : person(user.userId),
+                  card: sameSource ? source.card : actionCard,
+                  ...selection,
+                  effects: ownEffects,
+                },
+              });
+            }
+          }
+        }
+
+        const giftPayload: CardReceiptGift | null =
+          input.action === 'gift' && actionCard && resolvedTargetId
+            ? {
+                recipientId: resolvedTargetId,
+                notice: { at, sender: person(user.userId), card: actionCard },
+              }
+            : null;
+        const defensesPayload = defenseByRecipient.size > 0 ? [...defenseByRecipient.values()] : null;
+        const interactionsPayload = interactions.length > 0 ? interactions : null;
+
+        const archivable = this.extractArchivableWeeks(state, context.now);
+        if (archivable.length > 0) {
+          await this.persistArchivedWeeksTx(manager, user.teamId, archivable);
+        }
+
+        game.state = state as unknown as Record<string, unknown>;
+        game.revision += 1;
+        game.updatedAt = now;
+        const persistedGame = await manager.save(PunchCardGameEntity, game);
+
+        const archive = manager.create(PunchCardActionArchiveEntity, {
           id: newObjectIdHex(),
           teamId: user.teamId,
-          revision: 0,
-          startWeek: weekKey,
-          state: { members: {} },
-          receipts: {},
-          pendingWrite: null,
-          createdAt: now,
-          updatedAt: now,
+          receiptKey,
+          contentHash: stableDigest({
+            actorId: user.userId,
+            requestKey: reqKey,
+            hash: reqHash,
+            at,
+            result,
+            ...(giftPayload ? { gift: giftPayload } : {}),
+            ...(defensesPayload ? { defenses: defensesPayload } : {}),
+            ...(interactionsPayload ? { interactions: interactionsPayload } : {}),
+          }),
+          actorId: user.userId,
+          requestKey: reqKey,
+          hash: reqHash,
+          at,
+          result: result as Record<string, unknown>,
+          gift: giftPayload as unknown as Record<string, unknown> | null,
+          giftReadAt: null,
+          defenses: defensesPayload as unknown[] | null,
+          defenseReadBy: null,
+          interactions: interactionsPayload as unknown[] | null,
+          interactionReadBy: null,
         });
-      }
+        await manager.save(PunchCardActionArchiveEntity, archive);
 
-      const state = (game.state ?? {}) as { members?: Record<string, MemberCardState> };
-      const actor = this.ensureMemberState(state, user.userId, weekKey);
-      const week = actor.weeks[weekKey];
+        return { resultView: result, savedGame: persistedGame, savedState: state, ctx: context };
+      },
+    );
 
-      let actionResult: Record<string, unknown> = {};
+    // 失效称号缓存（实时更新吕洞宾、相思了等称号）
+    this.titlesService.invalidateTeamCache(user.teamId);
 
-      if (input.action === 'draw') {
-        const count = input.count ?? 1;
-        const freeAvail = Math.max(0, WEEKLY_FREE_DRAWS - (week.freeUsed ?? 0));
-        const bonusAvail = week.bonusDraws ?? 0;
-
-        const useFree = Math.min(count, freeAvail);
-        const useBonus = Math.min(count - useFree, bonusAvail);
-        const needPaid = count - useFree - useBonus;
-
-        if (needPaid > 0) {
-          const alreadyPaid = week.paidDrawsUsed ?? 0;
-          if (alreadyPaid + needPaid > WEEKLY_MAX_PAID_DRAWS) {
-            throw new BadRequestException(
-              `本周付费抽卡已达上限（每周限 ${WEEKLY_MAX_PAID_DRAWS} 抽，已用 ${alreadyPaid} 抽）`,
-            );
-          }
-          const coinCost = needPaid * COIN_COST_PER_DRAW;
-          // 原生扣减统一 coin 乐币（按 requestKey 幂等）
-          await this.economyLedger.spendCoins({
-            userId: user.ssoSub || user.userId,
-            amount: coinCost,
-            reason: 'card_draw',
-            title: `卡牌工坊${count === 10 ? '十连抽' : '单抽'}（付费 ${needPaid} 抽）`,
-            idempotencyKey: `punch:card-draw:${user.teamId}:${receiptKey}`,
-            appId: 'lec-punch-cards',
-          });
-          week.paidDrawsUsed = alreadyPaid + needPaid;
-          week.spentCoins = (week.spentCoins ?? 0) + coinCost;
-        }
-
-        week.freeUsed = (week.freeUsed ?? 0) + useFree;
-        week.bonusDraws = Math.max(0, bonusAvail - useBonus);
-
-        const drawn = Array.from({ length: count }, () => drawOneCard(actor));
-        actionResult = {
-          action: 'draw',
-          count,
-          paidDraws: needPaid,
-          spentCoins: needPaid * COIN_COST_PER_DRAW,
-          gainedCardIds: drawn.map((c) => toPublicCardId(c.id)),
-          cards: drawn.map((c) => ({ ...c, id: toPublicCardId(c.id) })),
-        };
-      } else if (input.action === 'gift') {
-        const internalCardId = resolveInternalCardId(input.cardId);
-        const rawTarget = input.targetId?.trim() || input.targetMemberKey?.trim();
-        if (!internalCardId || !rawTarget) {
-          throw new BadRequestException('赠送卡牌需要指定 cardId 和目标成员');
-        }
-        const targetUid = this.usersService.resolveMemberKey(rawTarget) ?? rawTarget;
-        if (!targetUid || targetUid === user.userId) {
-          throw new BadRequestException('无效的受赠成员');
-        }
-        const targetUser = await this.userRepo.findOne({
-          where: { id: targetUid, teamId: user.teamId },
-        });
-        if (!targetUser) throw new ForbiddenException('只能赠送给同团队成员');
-
-        const owned = actor.inventory[internalCardId] ?? 0;
-        if (owned < 1) throw new BadRequestException('背包中该卡牌数量不足');
-
-        const receiver = this.ensureMemberState(state, targetUid, weekKey);
-        actor.inventory[internalCardId] = owned - 1;
-        receiver.inventory[internalCardId] = (receiver.inventory[internalCardId] ?? 0) + 1;
-        if (!receiver.discovered.includes(internalCardId)) {
-          receiver.discovered.push(internalCardId);
-        }
-
-        actionResult = {
-          action: 'gift',
-          cardId: toPublicCardId(internalCardId),
-          targetId: targetUid,
-        };
-      } else {
-        const internalCardId = resolveInternalCardId(input.cardId);
-        if (!internalCardId) throw new BadRequestException('缺少或无效的 cardId');
-        const owned = actor.inventory[internalCardId] ?? 0;
-        if (owned < 1) throw new BadRequestException('背包中该卡牌数量不足');
-        actor.inventory[internalCardId] = owned - 1;
-        if (internalCardId === 'r-add') {
-          week.entertainmentSeconds += 1800;
-        }
-        actionResult = {
-          action: 'use',
-          cardId: toPublicCardId(internalCardId),
-          appliedAt: now.toISOString(),
-        };
-      }
-
-      game.state = state as Record<string, unknown>;
-      game.revision += 1;
-      game.updatedAt = now;
-      await manager.save(PunchCardGameEntity, game);
-
-      const archive = manager.create(PunchCardActionArchiveEntity, {
-        id: newObjectIdHex(),
-        teamId: user.teamId,
-        receiptKey,
-        contentHash: reqHash,
-        actorId: user.userId,
-        requestKey: reqKey,
-        hash: reqHash,
-        at: now.toISOString(),
-        result: actionResult,
-        gift: null,
-        giftReadAt: null,
-        defenses: null,
-        defenseReadBy: null,
-        interactions: null,
-        interactionReadBy: null,
-      });
-      await manager.save(PunchCardActionArchiveEntity, archive);
-
-      return actionResult;
-    });
-  }
-
-  async performActionWithView(user: PunchAuthUser, input: z.infer<typeof CardActionSchema>) {
-    const result = await this.performAction(user, input);
-    return { result, state: await this.getMe(user) };
+    return {
+      result: resultView,
+      state: await this.buildView(savedGame, savedState, user, ctx),
+    };
   }
 
   async getActionStatus(user: PunchAuthUser, requestKey: string) {
+    const receiptKey = sha256Hex(`${user.userId}:${requestKey}`);
     const rec = await this.receiptRepo.findOne({
-      where: { teamId: user.teamId, receiptKey: `${user.userId}:${requestKey}` },
+      where: { teamId: user.teamId, receiptKey },
     });
     if (!rec) throw new NotFoundException('该操作尚未确认，请使用原操作编号重试');
     return { result: rec.result, state: await this.getMe(user) };
   }
 
-  /**
-   * 代理读取 LecPunch 私有桶中的卡牌立绘（`lec-private/punch/cards/20261027-v1/{cardId}.png`）。
-   * 兼容外部公开编号 `card-01`..`card-21` 以及原始内部 cardId，仅允许已解锁该卡的成员读取。
-   */
-  async getCardArtwork(user: PunchAuthUser, rawId: string): Promise<{ body: Buffer; contentType: string }> {
-    const trimmed = rawId.trim();
-    const matched = CARD_CATALOG.find((card, idx) => {
-      const pubId = `card-${String(idx + 1).padStart(2, '0')}`;
-      return pubId === trimmed || card.id === trimmed;
-    });
-    if (!matched) {
-      throw new NotFoundException('卡片不存在');
-    }
+  async acknowledgeGifts(user: PunchAuthUser, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    const res = await this.receiptRepo
+      .createQueryBuilder()
+      .update(PunchCardActionArchiveEntity)
+      .set({ giftReadAt: new Date() })
+      .where('team_id = :teamId', { teamId: user.teamId })
+      .andWhere("gift->>'recipientId' = :uid", { uid: user.userId })
+      .andWhere('receipt_key IN (:...ids)', { ids: uniqueIds })
+      .andWhere('gift_read_at IS NULL')
+      .execute();
+    return { acknowledged: res.affected ?? 0 };
+  }
 
+  async acknowledgeDefenses(user: PunchAuthUser, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    const rows = await this.receiptRepo.find({
+      where: { teamId: user.teamId, receiptKey: In(uniqueIds) },
+    });
+    let acknowledged = 0;
+    for (const row of rows) {
+      const defenses = (row.defenses ?? []) as CardReceiptDefense[];
+      if (!defenses.some((d) => d.recipientId === user.userId)) continue;
+      const readBy = Array.isArray(row.defenseReadBy) ? [...row.defenseReadBy] : [];
+      if (readBy.includes(user.userId)) continue;
+      readBy.push(user.userId);
+      row.defenseReadBy = readBy;
+      await this.receiptRepo.save(row);
+      acknowledged += 1;
+    }
+    return { acknowledged };
+  }
+
+  async acknowledgeInteractions(user: PunchAuthUser, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    const rows = await this.receiptRepo.find({
+      where: { teamId: user.teamId, receiptKey: In(uniqueIds) },
+    });
+    let acknowledged = 0;
+    for (const row of rows) {
+      const interactions = (row.interactions ?? []) as CardReceiptInteraction[];
+      if (!interactions.some((i) => i.recipientId === user.userId)) continue;
+      const readBy = Array.isArray(row.interactionReadBy) ? [...row.interactionReadBy] : [];
+      if (readBy.includes(user.userId)) continue;
+      readBy.push(user.userId);
+      row.interactionReadBy = readBy;
+      await this.receiptRepo.save(row);
+      acknowledged += 1;
+    }
+    return { acknowledged };
+  }
+
+  /** 代理读取 LecPunch 私有桶中的卡牌立绘，仅允许已解锁该卡的成员读取。 */
+  async getCardArtwork(
+    user: PunchAuthUser,
+    rawId: string,
+  ): Promise<{ body: Buffer; contentType: string }> {
+    const internalId = resolveInternalCardId(rawId);
+    if (!internalId) throw new NotFoundException('卡片不存在');
     const game = await this.gameRepo.findOne({ where: { teamId: user.teamId } });
-    const state = (game?.state ?? {}) as { members?: Record<string, MemberCardState> };
-    const member = state.members?.[user.userId];
-    if (!member?.discovered?.includes(matched.id)) {
+    const state = normalizeGameState(game?.state);
+    if (!state.members[user.userId]?.discovered?.includes(internalId)) {
       throw new ForbiddenException('尚未发现这张卡片');
     }
-
     if (!this.s3Storage.isPunchPrivateConfigured()) {
       throw new ServiceUnavailableException('卡牌私有对象存储尚未配置');
     }
-    const key = `${this.cfg.punchStorage.cardAssetsPrefix}/${matched.id}.png`;
+    const key = `${this.cfg.punchStorage.cardAssetsPrefix}/${internalId}.png`;
     const obj = await this.s3Storage.getPunchPrivateObject(key);
-    if (!obj) {
-      throw new NotFoundException('卡牌图片暂不可用');
-    }
+    if (!obj) throw new NotFoundException('卡牌图片暂不可用');
     return { body: obj.body, contentType: 'image/png' };
   }
 }
@@ -584,23 +1261,23 @@ export class PunchCardsController {
 
   @Post('cards/gifts/ack')
   @HttpCode(HttpStatus.OK)
-  ackGifts(@Body() rawBody: unknown) {
+  ackGifts(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
     const { ids } = AckIdsSchema.parse(rawBody);
-    return { ok: true, count: ids.length };
+    return this.cardsService.acknowledgeGifts(user, ids);
   }
 
   @Post('cards/defenses/ack')
   @HttpCode(HttpStatus.OK)
-  ackDefenses(@Body() rawBody: unknown) {
+  ackDefenses(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
     const { ids } = AckIdsSchema.parse(rawBody);
-    return { ok: true, count: ids.length };
+    return this.cardsService.acknowledgeDefenses(user, ids);
   }
 
   @Post('cards/interactions/ack')
   @HttpCode(HttpStatus.OK)
-  ackInteractions(@Body() rawBody: unknown) {
+  ackInteractions(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
     const { ids } = AckIdsSchema.parse(rawBody);
-    return { ok: true, count: ids.length };
+    return this.cardsService.acknowledgeInteractions(user, ids);
   }
 
   @Get('stats/member/:memberKey/cards')

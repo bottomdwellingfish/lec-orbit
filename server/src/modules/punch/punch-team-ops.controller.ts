@@ -13,7 +13,10 @@ import {
   Get,
   Header,
   Inject,
+  Logger,
   NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
   Param,
   Patch,
   Post,
@@ -141,8 +144,10 @@ function formatShanghaiBucket(date: Date, granularity: 'day' | 'month'): string 
 
 @Controller()
 @UseGuards(PunchAuthGuard)
-export class PunchTeamOpsController {
+export class PunchTeamOpsController implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PunchTeamOpsController.name);
   private readonly sseSubscribers = new Set<SseSubscriber>();
+  private reportCleanupTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     @InjectRepository(PunchTeamEventEntity)
@@ -160,6 +165,53 @@ export class PunchTeamOpsController {
     private readonly s3Storage: S3StorageService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    if (this.cfg.nodeEnv === 'test') return;
+    await this.cleanupExpiredReportImages().catch(() => undefined);
+    this.reportCleanupTimer = setInterval(() => {
+      void this.cleanupExpiredReportImages().catch(() => undefined);
+    }, 60_000);
+    this.reportCleanupTimer.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.reportCleanupTimer) clearInterval(this.reportCleanupTimer);
+  }
+
+  /** 定期清理私有对象存储中已过期的举报图片并回写 images_purged_at。 */
+  async cleanupExpiredReportImages(): Promise<number> {
+    if (!this.s3Storage.isPunchPrivateConfigured()) return 0;
+    const now = new Date();
+    const expired = await this.reportRepo
+      .createQueryBuilder('r')
+      .where('r.images_expire_at IS NOT NULL AND r.images_expire_at <= :now AND r.images_purged_at IS NULL', {
+        now,
+      })
+      .take(50)
+      .getMany();
+
+    let purgedCount = 0;
+    const prefix = this.cfg.punchStorage.reportImagesPrefix;
+    for (const report of expired) {
+      try {
+        for (const img of report.images ?? []) {
+          if (REPORT_IMAGE_FILENAME_RE.test(img.filename)) {
+            await this.s3Storage.deletePunchPrivateObject(`${prefix}/${img.filename}`);
+          }
+        }
+        report.imagesPurgedAt = now;
+        report.updatedAt = now;
+        await this.reportRepo.save(report);
+        purgedCount += 1;
+      } catch (err) {
+        this.logger.warn(
+          `清理举报 ${report.id} 过期图片失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return purgedCount;
+  }
 
   /** 向在线的 SSE 客户端广播通知变更事件（不携带敏感正文，由前端重新拉取鉴权接口）。 */
   private broadcastNotificationChange(teamId: string, opts?: { userId?: string; adminOnly?: boolean }): void {
@@ -241,12 +293,43 @@ export class PunchTeamOpsController {
 
   @Get('team-ledger/admin/entries')
   @PunchAdminOnly()
-  listLedger(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.ledgerRepo.find({
-      where: { teamId: user.teamId },
-      order: { occurredAt: 'DESC' },
-      take: 500,
-    });
+  listLedger(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Query('from') rawFrom?: string,
+    @Query('to') rawTo?: string,
+    @Query('type') rawType?: string,
+    @Query('status') rawStatus?: string,
+    @Query('category') rawCategory?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const limit = Math.min(Math.max(Number.parseInt(rawLimit ?? '100', 10) || 100, 1), 500);
+    const qb = this.ledgerRepo
+      .createQueryBuilder('e')
+      .where('e.team_id = :teamId', { teamId: user.teamId });
+
+    if (rawType === 'income' || rawType === 'expense') {
+      qb.andWhere('e.type = :type', { type: rawType });
+    }
+    if (rawStatus === 'active' || rawStatus === 'voided') {
+      qb.andWhere('e.status = :status', { status: rawStatus });
+    }
+    if (rawCategory?.trim()) {
+      qb.andWhere('e.category = :category', { category: rawCategory.trim() });
+    }
+    if (rawFrom) {
+      const fromDate = new Date(rawFrom);
+      if (!Number.isNaN(fromDate.getTime())) qb.andWhere('e.occurred_at >= :from', { from: fromDate });
+    }
+    if (rawTo) {
+      const toDate = new Date(rawTo);
+      if (!Number.isNaN(toDate.getTime())) qb.andWhere('e.occurred_at <= :to', { to: toDate });
+    }
+
+    return qb
+      .orderBy('e.occurred_at', 'DESC')
+      .addOrderBy('e.created_at', 'DESC')
+      .take(limit)
+      .getMany();
   }
 
   @Post('team-ledger/admin/entries')
@@ -336,20 +419,44 @@ export class PunchTeamOpsController {
 
   @Get('team-ledger/admin/summary')
   @PunchAdminOnly()
-  async ledgerSummary(@PunchCurrentUser() user: PunchAuthUser) {
-    const rows = await this.ledgerRepo.find({
-      where: { teamId: user.teamId, status: 'active' },
-    });
+  async ledgerSummary(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Query('from') rawFrom?: string,
+    @Query('to') rawTo?: string,
+    @Query('status') rawStatus?: string,
+  ) {
+    const qb = this.ledgerRepo
+      .createQueryBuilder('e')
+      .where('e.team_id = :teamId', { teamId: user.teamId });
+
+    if (rawStatus === 'voided') {
+      qb.andWhere('e.status = :status', { status: 'voided' });
+    } else if (rawStatus !== 'all') {
+      qb.andWhere('e.status = :status', { status: 'active' });
+    }
+    if (rawFrom) {
+      const fromDate = new Date(rawFrom);
+      if (!Number.isNaN(fromDate.getTime())) qb.andWhere('e.occurred_at >= :from', { from: fromDate });
+    }
+    if (rawTo) {
+      const toDate = new Date(rawTo);
+      if (!Number.isNaN(toDate.getTime())) qb.andWhere('e.occurred_at <= :to', { to: toDate });
+    }
+
+    const rows = await qb.getMany();
     let incomeCents = 0;
     let expenseCents = 0;
     for (const r of rows) {
       if (r.type === 'income') incomeCents += r.amountCents;
       else expenseCents += r.amountCents;
     }
+    const netCents = incomeCents - expenseCents;
     return {
       incomeCents,
       expenseCents,
-      balanceCents: incomeCents - expenseCents,
+      netCents,
+      balanceCents: netCents,
+      entryCount: rows.length,
       count: rows.length,
     };
   }
@@ -809,6 +916,29 @@ export class PunchTeamOpsController {
   @PunchAdminOnly()
   async createAdminNotice(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
     const input = AdminNoticeSchema.parse(rawBody);
+    const deliveryKey = input.requestKey
+      ? `notice:${user.teamId}:${user.userId}:${input.requestKey}`
+      : null;
+    const requestHash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          title: input.title,
+          message: input.message,
+          audience: input.audience,
+        }),
+      )
+      .digest('hex');
+
+    if (deliveryKey) {
+      const existing = await this.notifRepo.findOne({ where: { deliveryKey } });
+      if (existing) {
+        if (existing.requestHash && existing.requestHash !== requestHash) {
+          throw new ConflictException('同一请求标识不能发送不同的群发通知');
+        }
+        return existing;
+      }
+    }
+
     const id = newObjectIdHex();
     const members = await this.userRepo.find({ where: { teamId: user.teamId, status: 'active' } });
     const recipientUserIds = members.filter((m) => Boolean(m.logtoUserId)).map((m) => m.id);
@@ -818,8 +948,8 @@ export class PunchTeamOpsController {
       userId: null,
       audience: input.audience,
       recipientUserIds,
-      deliveryKey: input.requestKey ? `notice:${user.teamId}:${user.userId}:${input.requestKey}` : null,
-      requestHash: null,
+      deliveryKey,
+      requestHash,
       type: 'admin.notice',
       title: input.title,
       message: input.message,
