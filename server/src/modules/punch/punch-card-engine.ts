@@ -587,7 +587,11 @@ export function applyGameAction(
     };
   } else if (action.action === 'gift') {
     const card = getCard(action.cardId ?? '');
-    const target = chooseTarget(action.targetId);
+    const targetPlayer = context.players.find(
+      (player) => player.id === action.targetId && player.id !== actorId,
+    );
+    if (!targetPlayer) throw new Error('请选择团队中的其他有效成员');
+    const target = targetPlayer.id;
     if ((getPlayerWeek(next, target, context.week).starvedUntil ?? 0) > context.now) {
       throw new Error('目标兵粮寸断期间不能接收新卡');
     }
