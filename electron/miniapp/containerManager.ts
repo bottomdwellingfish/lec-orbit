@@ -35,6 +35,7 @@ import {
   type MiniAppLaunchDevUrlInput,
   type MiniAppLaunchInput,
   type MiniAppLaunchLocalDirInput,
+  type MiniAppLaunchRoomContext,
   type MiniAppLaunchSource,
   type MiniAppRuntimeSnapshot,
   type OrbitAppManifest,
@@ -87,6 +88,10 @@ interface RunningMiniAppInstance {
   standaloneWindow: BrowserWindow | null;
   loading: boolean;
   error?: string;
+  startedAt: number;
+  presenceTimer?: ReturnType<typeof setInterval>;
+  /** 通过组队邀请直达房间时的上下文（用于冷启动拉取及热进房推送）。 */
+  launchRoom?: MiniAppLaunchRoomContext;
 }
 
 export interface ContainerManagerDeps {
@@ -240,7 +245,13 @@ export class MiniAppContainerManager {
   }): void {
     const inst = this.instances.get(payload.appId);
     if (!inst || inst.view.webContents.isDestroyed()) return;
-    if (!inst.manifest.permissions.scopes.includes('realtime.room')) return;
+    // 平台级组队邀请回执事件（orbit.invite.responded）允许免 realtime.room 声明直接送达房主容器
+    if (
+      payload.event !== 'orbit.invite.responded' &&
+      !inst.manifest.permissions.scopes.includes('realtime.room')
+    ) {
+      return;
+    }
     inst.view.webContents.send('orbit:sdk:event:realtime', {
       roomId: payload.roomId ?? null,
       event: payload.event,
@@ -420,9 +431,135 @@ export class MiniAppContainerManager {
       });
       if (!resp.ok) {
         const body = (await resp.json().catch(() => null)) as { error?: string; message?: string } | null;
-        throw new Error(body?.error || body?.message || `获取 Nakama 联机会话失败（HTTP ${resp.status}）`);
+        throw new Error(body?.message || body?.error || `获取 Nakama 联机会话失败（HTTP ${resp.status}）`);
       }
       return resp.json();
+    });
+
+    // ── 工坊组队邀请与直达房间 IPC（SDK v1.3.0）──
+    ipcMain.handle('orbit:sdk:multiplayer:listStudioMembers', async (event, rawOptions) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('user.profile')) {
+        throw new Error('应用未在 manifest 中声明 user.profile 权限，无法读取工作室成员列表');
+      }
+      const options = z
+        .object({ includeSelf: z.boolean().optional() })
+        .optional()
+        .parse(rawOptions);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法读取工作室成员列表');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+      const [membersResp, presenceResp] = await Promise.all([
+        fetch(`${base}/api/v1/members`, { headers }),
+        fetch(`${base}/api/v1/apps/presence`, { headers }).catch(() => null),
+      ]);
+      if (!membersResp.ok) {
+        const body = (await membersResp.json().catch(() => null)) as { error?: string; message?: string } | null;
+        throw new Error(body?.message || body?.error || `读取工作室成员列表失败（HTTP ${membersResp.status}）`);
+      }
+      const membersJson = (await membersResp.json()) as {
+        items?: Array<{
+          userId: string;
+          username?: string;
+          displayName?: string;
+          avatar?: string;
+          enrollYear?: number | null;
+          isCaptain?: boolean;
+        }>;
+      };
+      const presenceJson =
+        presenceResp && presenceResp.ok
+          ? ((await presenceResp.json().catch(() => ({}))) as {
+              items?: Array<{ userId: string; appId: string; appName?: string }>;
+            })
+          : { items: [] };
+
+      const playingThisApp = new Set<string>();
+      const playingAny = new Map<string, string>();
+      for (const p of presenceJson.items ?? []) {
+        if (!p?.userId) continue;
+        if (p.appId === inst.appId) {
+          playingThisApp.add(p.userId);
+        }
+        if (!playingAny.has(p.userId) && p.appName) {
+          playingAny.set(p.userId, p.appName);
+        }
+      }
+
+      const selfId = this.deps.getAuthState().profile?.subject ?? '';
+      const includeSelf = Boolean(options?.includeSelf);
+      const items = (membersJson.items ?? [])
+        .map((m) => ({
+          userId: m.userId,
+          username: m.username ?? '',
+          displayName: m.displayName || m.username || '工作室成员',
+          avatar: m.avatar ?? '',
+          enrollYear: typeof m.enrollYear === 'number' ? m.enrollYear : null,
+          isCaptain: Boolean(m.isCaptain),
+          isPlayingThisApp: playingThisApp.has(m.userId),
+          playingAppName: playingAny.get(m.userId) ?? null,
+          isSelf: Boolean(selfId && m.userId === selfId),
+        }))
+        .filter((m) => includeSelf || !m.isSelf);
+
+      items.sort((a, b) => {
+        if (a.isPlayingThisApp !== b.isPlayingThisApp) return a.isPlayingThisApp ? -1 : 1;
+        if (Boolean(a.playingAppName) !== Boolean(b.playingAppName)) {
+          return a.playingAppName ? -1 : 1;
+        }
+        const yA = a.enrollYear ?? 0;
+        const yB = b.enrollYear ?? 0;
+        if (yA !== yB) return yB - yA;
+        return a.displayName.localeCompare(b.displayName, 'zh-CN');
+      });
+      return items;
+    });
+
+    ipcMain.handle('orbit:sdk:multiplayer:sendRoomInvite', async (event, rawInput) => {
+      const inst = resolveCaller(event.sender.id);
+      const input = z
+        .object({
+          toUserIds: z
+            .array(z.string().trim().min(1).max(64))
+            .min(1, '请至少选择一位队友')
+            .max(8, '单次最多同时邀请 8 位队友'),
+          roomId: z.string().trim().min(1, '房间号不能为空').max(128),
+          roomName: z.string().trim().max(64).optional(),
+          message: z.string().trim().max(140).optional(),
+          mode: MiniAppDisplayModeSchema.optional(),
+          expiresInSeconds: z.number().int().min(60).max(3600).optional(),
+          meta: z.record(z.string(), z.unknown()).optional(),
+        })
+        .parse(rawInput);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法发送组队邀请');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/invites`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            ...input,
+            appNameHint: inst.manifest.name,
+          }),
+        },
+      );
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as { error?: string; message?: string } | null;
+        throw new Error(body?.message || body?.error || `发送组队邀请失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:multiplayer:getLaunchRoom', (event) => {
+      const inst = resolveCaller(event.sender.id);
+      return inst.launchRoom ?? null;
     });
 
     // ── 通用乐币（coin）与本周打卡时长（punch_minutes）受控交易 IPC ──
@@ -1113,11 +1250,24 @@ export class MiniAppContainerManager {
 
   async launch(input: MiniAppLaunchInput): Promise<RunningMiniAppState> {
     const existing = this.instances.get(input.appId);
-    if (existing && !input.remoteBundle) {
+    const sameRunningVersion =
+      existing &&
+      (!input.remoteBundle ||
+        existing.manifest.version === input.remoteBundle.version ||
+        existing.source === 'local-dir' ||
+        existing.source === 'dev-url');
+    if (sameRunningVersion) {
       if (input.mode && input.mode !== existing.mode) {
         this.switchMode(existing.appId, input.mode);
       } else {
         this.focusInstance(existing);
+      }
+      // 热进房：容器已在运行同版本时无需刷新，直接把新房间上下文推入容器
+      if (input.launchRoom) {
+        existing.launchRoom = input.launchRoom;
+        if (!existing.view.webContents.isDestroyed()) {
+          existing.view.webContents.send('orbit:sdk:event:roomJoin', input.launchRoom);
+        }
       }
       return this.toState(existing);
     }
@@ -1129,6 +1279,7 @@ export class MiniAppContainerManager {
         rootDir: builtin.dirPath,
         source: 'builtin',
         requestedMode: input.mode,
+        launchRoom: input.launchRoom,
       });
     }
 
@@ -1145,6 +1296,7 @@ export class MiniAppContainerManager {
         source: 'installed',
         requestedMode: input.mode,
         iconUrl: input.remoteBundle.iconUrl,
+        launchRoom: input.launchRoom,
       });
     }
 
@@ -1157,6 +1309,7 @@ export class MiniAppContainerManager {
       rootDir: installed.installDir,
       source: 'installed',
       requestedMode: input.mode,
+      launchRoom: input.launchRoom,
     });
   }
 
@@ -1212,6 +1365,7 @@ export class MiniAppContainerManager {
     iconUrl?: string;
     source: MiniAppLaunchSource;
     requestedMode?: MiniAppDisplayMode;
+    launchRoom?: MiniAppLaunchRoomContext;
   }): RunningMiniAppState {
     const { manifest } = params;
     const appId = manifest.id;
@@ -1259,11 +1413,23 @@ export class MiniAppContainerManager {
       view,
       standaloneWindow: null,
       loading: true,
+      startedAt: Date.now(),
+      launchRoom: params.launchRoom,
     };
 
     const wc = view.webContents;
     this.instances.set(appId, instance);
     this.webContentsToAppId.set(wc.id, appId);
+
+    // 仅针对正式安装作品与官方示例上报在线在玩状态（每 30 秒续期心跳）
+    if (params.source === 'installed' || params.source === 'builtin') {
+      void this.reportPresence(appId, manifest.name, manifest.type);
+      instance.presenceTimer = setInterval(() => {
+        if (!this.instances.has(appId)) return;
+        void this.reportPresence(appId, manifest.name, manifest.type);
+      }, 30_000);
+      instance.presenceTimer.unref?.();
+    }
 
     this.deps.localDb.setAppPref(this.deps.getScopeKey(), appId, {
       lastOpenedAt: Date.now(),
@@ -1300,6 +1466,9 @@ export class MiniAppContainerManager {
       if (!wc.isDestroyed()) {
         wc.send('orbit:sdk:event:themeChanged', this.resolveEffectiveTheme());
         wc.send('orbit:sdk:event:modeChanged', instance.mode);
+        if (instance.launchRoom) {
+          wc.send('orbit:sdk:event:roomJoin', instance.launchRoom);
+        }
       }
       this.emitRuntimeChanged();
     });
@@ -1547,10 +1716,73 @@ export class MiniAppContainerManager {
     inst.standaloneWindow.setFullScreen(!inst.standaloneWindow.isFullScreen());
   }
 
+  private async reportPresence(appId: string, appName: string, appType: string): Promise<void> {
+    try {
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) return;
+      const base = getOrbitEndpoints().orbitApiBase;
+      await fetch(`${base}/api/v1/apps/${encodeURIComponent(appId)}/presence`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ appName, appType }),
+      });
+    } catch {
+      // 静默忽略网络抖动，不影响本地运行
+    }
+  }
+
+  private async clearPresence(appId: string): Promise<void> {
+    try {
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) return;
+      const base = getOrbitEndpoints().orbitApiBase;
+      await fetch(`${base}/api/v1/apps/${encodeURIComponent(appId)}/presence`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // 静默忽略
+    }
+  }
+
+  private async endPlaySession(appId: string, durationSeconds: number): Promise<void> {
+    try {
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) return;
+      const base = getOrbitEndpoints().orbitApiBase;
+      await fetch(`${base}/api/v1/apps/${encodeURIComponent(appId)}/play-session/end`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ durationSeconds }),
+      });
+    } catch {
+      // 静默忽略
+    }
+  }
+
   close(appId: string): void {
     const inst = this.instances.get(appId);
     if (!inst) return;
     this.instances.delete(appId);
+
+    if (inst.presenceTimer) {
+      clearInterval(inst.presenceTimer);
+      inst.presenceTimer = undefined;
+    }
+
+    // 启动并结束算一局：结算游玩记录与评分机会（非作者封顶 1 次机会），并清除在线在玩状态
+    if (inst.source === 'installed') {
+      const durationSeconds = Math.max(0, Math.round((Date.now() - inst.startedAt) / 1000));
+      void this.endPlaySession(appId, durationSeconds);
+    } else if (inst.source === 'builtin') {
+      void this.clearPresence(appId);
+    }
 
     const wc = inst.view.webContents;
     if (!wc.isDestroyed()) {

@@ -452,23 +452,27 @@ export class PunchStatsAssessmentService implements OnModuleInit, OnModuleDestro
   /** 读取团队本周排行（支持可选 enrollYear 筛选，完整挂载 avatarBase64、titles 与卡牌娱乐时长）。 */
   async getTeamCurrentWeekRanking(teamId: string, enrollYear?: number) {
     const weekKey = getShanghaiWeekKey(new Date());
-    const memberWhere =
-      enrollYear !== undefined
-        ? { teamId, status: 'active' as const, enrollYear }
-        : { teamId, status: 'active' as const };
 
-    const [members, recRows, adjRows, cardEnt, cardCounts, tradeSummary, titlesByUserId] =
+    const [allActiveMembers, recRows, adjRows, cardEnt, cardCounts, tradeSummary, titlesByUserId] =
       await Promise.all([
-        this.userRepo.find({ where: memberWhere }),
+        this.userRepo.find({ where: { teamId, status: 'active' as const } }),
         this.sessionRepo.query(
           `SELECT user_id AS "userId",
                   COALESCE(SUM(CASE WHEN status = 'completed' AND duration_seconds >= 0 AND duration_seconds < 18000 THEN duration_seconds ELSE 0 END), 0)::int AS "recordedSeconds",
-                  COUNT(*)::int AS "sessionsCount"
+                  COUNT(CASE WHEN status <> 'active' THEN 1 END)::int AS "sessionsCount",
+                  COUNT(CASE WHEN status = 'active' THEN 1 END)::int AS "activeSessionsCount"
            FROM punch_attendance_sessions
-           WHERE team_id = $1 AND week_key = $2 AND status <> 'active'
+           WHERE team_id = $1 AND week_key = $2
            GROUP BY user_id`,
           [teamId, weekKey],
-        ) as Promise<Array<{ userId: string; recordedSeconds: number; sessionsCount: number }>>,
+        ) as Promise<
+          Array<{
+            userId: string;
+            recordedSeconds: number;
+            sessionsCount: number;
+            activeSessionsCount: number;
+          }>
+        >,
         this.adjRepo.query(
           `SELECT user_id AS "userId",
                   COALESCE(SUM(signed_duration_seconds), 0)::int AS "manualSeconds",
@@ -483,6 +487,14 @@ export class PunchStatsAssessmentService implements OnModuleInit, OnModuleDestro
         this.economyLedger.getWeeklyTradeMinutesSummary(weekKey),
         this.titlesService.getTeamDisplayTitlesByUserId(teamId).catch(() => undefined),
       ]);
+
+    // 过滤无 LecSSO 绑定的历史幽灵账号，并计算大一~大三（最近 3 级）必考/称号年级
+    const ssoMembers = allActiveMembers.filter((m) => Boolean(m.logtoUserId));
+    const eligibleGrades = new Set(assessmentEnrollYears(ssoMembers.map((m) => m.enrollYear)));
+    const members =
+      enrollYear !== undefined
+        ? ssoMembers.filter((m) => m.enrollYear === enrollYear)
+        : ssoMembers;
 
     const recMap = new Map(recRows.map((r) => [r.userId, r]));
     const adjMap = new Map(adjRows.map((a) => [a.userId, a]));
@@ -500,7 +512,10 @@ export class PunchStatsAssessmentService implements OnModuleInit, OnModuleDestro
         const entertainmentSeconds =
           cardSec + (tradeSummary.affectsAssessment ? tradeMin * 60 : 0);
         const total = comprehensiveDurationSeconds(recorded, manual, entertainmentSeconds);
-        const goal = weeklyGoalSeconds(m.enrollYear);
+        const isEligibleGrade = eligibleGrades.has(m.enrollYear);
+        const goal = isEligibleGrade ? weeklyGoalSeconds(m.enrollYear) : 0;
+        const sessionsCount = Number(rec?.sessionsCount ?? 0);
+        const activeSessionsCount = Number(rec?.activeSessionsCount ?? 0);
 
         return {
           weekKey,
@@ -514,22 +529,39 @@ export class PunchStatsAssessmentService implements OnModuleInit, OnModuleDestro
           avatarBase64: m.avatarBase64 ?? undefined,
           avatarColor: m.avatarColor ?? undefined,
           avatarEmoji: m.avatarEmoji ?? undefined,
-          equippedTitleId: m.equippedTitleId ?? undefined,
-          titles: titlesByUserId?.get(m.id) ?? [],
+          equippedTitleId: isEligibleGrade ? (m.equippedTitleId ?? undefined) : undefined,
+          // 非大一~大三（最近 3 级）不纳入称号体系
+          titles: isEligibleGrade ? (titlesByUserId?.get(m.id) ?? []) : [],
           cardCount: cardCounts.get(m.id) ?? 0,
           recordedDurationSeconds: recorded,
           manualAdjustmentSeconds: manual,
           adjustmentsCount: Number(adj?.adjustmentsCount ?? 0),
-          sessionsCount: Number(rec?.sessionsCount ?? 0),
+          sessionsCount,
           entertainmentSeconds,
           tradeMinutes: tradeMin,
           totalDurationSeconds: total,
           weeklyGoalSeconds: goal,
-          assessmentComplete: total >= goal,
+          assessmentComplete: isEligibleGrade ? total >= goal : false,
+          _isEligibleGrade: isEligibleGrade,
+          _hasActiveSession: activeSessionsCount > 0,
         };
       })
+      // 其他届别（非最近 3 级）默认不加入排行榜，除非本周有打卡（含正在在岗）或计入时长
+      .filter((item) => {
+        if (enrollYear !== undefined) return true;
+        if (item._isEligibleGrade) return true;
+        return (
+          item._hasActiveSession ||
+          item.sessionsCount > 0 ||
+          item.recordedDurationSeconds > 0 ||
+          item.totalDurationSeconds > 0
+        );
+      })
       .sort((a, b) => b.totalDurationSeconds - a.totalDurationSeconds)
-      .map((item, idx) => ({ ...item, rank: idx + 1 }));
+      .map(({ _isEligibleGrade: _ignored1, _hasActiveSession: _ignored2, ...item }, idx) => ({
+        ...item,
+        rank: idx + 1,
+      }));
 
     return { weekKey, items };
   }

@@ -39,12 +39,19 @@ function normalizePunchError(err: unknown): PunchApiError {
   if (err instanceof AxiosError) {
     const status = err.response?.status;
     const payload = err.response?.data as { message?: unknown; error?: unknown } | undefined;
-    const serverMsg =
-      typeof payload?.message === 'string'
-        ? payload.message
+    const rawMsg =
+      typeof payload?.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
         : Array.isArray(payload?.message)
-          ? payload.message.join('；')
-          : undefined;
+          ? payload.message
+              .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+              .join('；')
+          : typeof payload?.error === 'string' && payload.error.trim()
+            ? payload.error.trim()
+            : undefined;
+    const serverMsg = rawMsg && !['Bad Request', 'Forbidden', 'Unauthorized', 'Not Found', 'Conflict'].includes(rawMsg)
+      ? rawMsg
+      : undefined;
     if (status === 401) {
       return new PunchApiError(serverMsg || '登录凭证已失效，请重新登录 LecSSO。', 401);
     }
@@ -411,7 +418,7 @@ export const punchApi = {
     const feverThreshold =
       typeof envelope?.feverThreshold === 'number' && envelope.feverThreshold > 0
         ? Math.floor(envelope.feverThreshold)
-        : 8;
+        : 12;
     const isFever =
       typeof envelope?.isFever === 'boolean' ? envelope.isFever : items.length >= feverThreshold;
     return { items, isFever, feverThreshold };
@@ -420,6 +427,35 @@ export const punchApi = {
   async fetchTeamActive(): Promise<TeamActiveMember[]> {
     const snapshot = await this.fetchTeamActiveSnapshot();
     return snapshot.items;
+  },
+
+  async fetchMyWeeklyHistory(limit = 12): Promise<
+    Array<{
+      weekKey: string;
+      totalDurationSeconds: number;
+      weeklyGoalSeconds: number;
+      assessmentComplete: boolean;
+      sessionsCount: number;
+    }>
+  > {
+    const { data } = await client.get<{
+      items?: Array<{
+        weekKey?: string;
+        totalDurationSeconds?: number;
+        weeklyGoalSeconds?: number;
+        assessmentComplete?: boolean;
+        sessionsCount?: number;
+      }>;
+      weeklyGoalSeconds?: number;
+    }>(PUNCH_ENDPOINTS.myWeeklyStats, { params: { limit } });
+    const fallbackGoal = Number(data.weeklyGoalSeconds ?? 18 * 3600);
+    return (data.items ?? []).map((item) => ({
+      weekKey: String(item.weekKey ?? ''),
+      totalDurationSeconds: Number(item.totalDurationSeconds ?? 0),
+      weeklyGoalSeconds: Number(item.weeklyGoalSeconds ?? fallbackGoal),
+      assessmentComplete: Boolean(item.assessmentComplete),
+      sessionsCount: Number(item.sessionsCount ?? 0),
+    }));
   },
 
   async fetchMyWeeklyStats(): Promise<MyWeeklyStats> {
@@ -588,6 +624,7 @@ export const punchApi = {
     const { data } = await client.get<MyTitlesView>(PUNCH_ENDPOINTS.titlesMe);
     return {
       weekKey: data.weekKey ?? '',
+      eligible: data.eligible ?? true,
       equippedTitleId: data.equippedTitleId ?? null,
       displayTitles: normalizeTitleBadges(data.displayTitles),
       catalog: Array.isArray(data.catalog) ? data.catalog : [],
@@ -598,6 +635,7 @@ export const punchApi = {
     const { data } = await client.patch<MyTitlesView>(PUNCH_ENDPOINTS.titlesEquip, { titleId });
     return {
       weekKey: data.weekKey ?? '',
+      eligible: data.eligible ?? true,
       equippedTitleId: data.equippedTitleId ?? null,
       displayTitles: normalizeTitleBadges(data.displayTitles),
       catalog: Array.isArray(data.catalog) ? data.catalog : [],

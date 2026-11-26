@@ -2,12 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { formatMemberDisplayName } from '../src/shared/punch';
 
 describe('formatMemberDisplayName', () => {
-  test('同时存在真名与不同昵称时展示 真名（昵称）', () => {
+  test('同时存在真名与历史昵称时仅展示真名，不再拼接括号昵称', () => {
     expect(formatMemberDisplayName({ realName: '王硕', displayName: '沉底的鱼', username: 'wangshuo' })).toBe(
-      '王硕（沉底的鱼）',
+      '王硕',
     );
     expect(formatMemberDisplayName({ realName: '  陈美琳 ', displayName: ' dragon ', username: 'dragon' })).toBe(
-      '陈美琳（dragon）',
+      '陈美琳',
     );
   });
 

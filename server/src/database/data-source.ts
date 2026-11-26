@@ -8,6 +8,9 @@ import { NotificationReadEntity } from '../modules/notifications/entities/notifi
 import { MiniAppEntity } from '../modules/miniapps/entities/mini-app.entity.js';
 import { MiniAppVersionEntity } from '../modules/miniapps/entities/mini-app-version.entity.js';
 import { MiniAppKvEntity } from '../modules/miniapps/entities/mini-app-kv.entity.js';
+import { MiniAppPlayRecordEntity } from '../modules/miniapps/entities/mini-app-play-record.entity.js';
+import { MiniAppPlayDailyEntity } from '../modules/miniapps/entities/mini-app-play-daily.entity.js';
+import { MiniAppRatingEntity } from '../modules/miniapps/entities/mini-app-rating.entity.js';
 import { EconomyAccountEntity } from '../modules/economy/entities/economy-account.entity.js';
 import { EconomyHoldEntity } from '../modules/economy/entities/economy-hold.entity.js';
 import { EconomyLedgerEntryEntity } from '../modules/economy/entities/economy-ledger-entry.entity.js';
@@ -54,6 +57,9 @@ import { InitialSchema1764000000000 } from './migrations/1764000000000-InitialSc
 import { AddPunchTables1764100000000 } from './migrations/1764100000000-AddPunchTables.js';
 import { AddMiniAppVersionIconUrl1764200000000 } from './migrations/1764200000000-AddMiniAppVersionIconUrl.js';
 import { AddMiniAppFunctions1764300000000 } from './migrations/1764300000000-AddMiniAppFunctions.js';
+import { AddOrbitMemberProfileFields1764400000000 } from './migrations/1764400000000-AddOrbitMemberProfileFields.js';
+import { AddMiniAppEngagementTables1764500000000 } from './migrations/1764500000000-AddMiniAppEngagementTables.js';
+import { AddMiniAppPlayDaily1764600000000 } from './migrations/1764600000000-AddMiniAppPlayDaily.js';
 
 export const ALL_ENTITIES = [
   OrbitMemberEntity,
@@ -64,6 +70,9 @@ export const ALL_ENTITIES = [
   MiniAppEntity,
   MiniAppVersionEntity,
   MiniAppKvEntity,
+  MiniAppPlayRecordEntity,
+  MiniAppPlayDailyEntity,
+  MiniAppRatingEntity,
   EconomyAccountEntity,
   EconomyHoldEntity,
   EconomyLedgerEntryEntity,
@@ -103,6 +112,9 @@ export const ALL_MIGRATIONS = [
   AddPunchTables1764100000000,
   AddMiniAppVersionIconUrl1764200000000,
   AddMiniAppFunctions1764300000000,
+  AddOrbitMemberProfileFields1764400000000,
+  AddMiniAppEngagementTables1764500000000,
+  AddMiniAppPlayDaily1764600000000,
 ];
 
 export function buildTypeOrmOptions(cfg: AppConfig): DataSourceOptions {

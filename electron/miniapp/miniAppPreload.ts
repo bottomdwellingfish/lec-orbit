@@ -99,6 +99,53 @@ export interface OrbitSdkNakamaSession {
   created: boolean;
 }
 
+export interface OrbitSdkStudioMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  isCaptain: boolean;
+  isPlayingThisApp: boolean;
+  playingAppName: string | null;
+  isSelf: boolean;
+}
+
+export interface OrbitSdkRoomInviteInput {
+  toUserIds: string[];
+  roomId: string;
+  roomName?: string;
+  message?: string;
+  mode?: OrbitSdkMode;
+  expiresInSeconds?: number;
+  meta?: Record<string, unknown>;
+}
+
+export interface OrbitSdkRoomInviteResult {
+  ok: true;
+  appId: string;
+  roomId: string;
+  expiresAt: string;
+  sent: Array<{ userId: string; displayName: string; inviteId: string }>;
+}
+
+export interface OrbitSdkRoomJoinPayload {
+  inviteId: string;
+  appId: string;
+  roomId: string;
+  roomName?: string;
+  mode?: OrbitSdkMode;
+  message?: string;
+  meta?: Record<string, unknown>;
+  inviter: {
+    userId: string;
+    username?: string;
+    displayName: string;
+    avatar?: string;
+  };
+  acceptedAt: string;
+}
+
 export interface OrbitSdkRealtimeMessage {
   roomId: string | null;
   event: string;
@@ -110,8 +157,22 @@ export interface OrbitSdkCloudCallOptions {
   previewVersionId?: string;
 }
 
+const roomJoinListeners = new Set<(payload: OrbitSdkRoomJoinPayload) => void>();
+let bufferedRoomJoin: OrbitSdkRoomJoinPayload | null = null;
+ipcRenderer.on('orbit:sdk:event:roomJoin', (_event: Electron.IpcRendererEvent, payload: OrbitSdkRoomJoinPayload) => {
+  if (roomJoinListeners.size === 0) {
+    // 缓冲冷启动期间先于页面业务脚本注册监听器到达的进房上下文
+    bufferedRoomJoin = payload;
+    return;
+  }
+  bufferedRoomJoin = null;
+  for (const listener of roomJoinListeners) {
+    listener(payload);
+  }
+});
+
 const orbitSDK = {
-  sdkVersion: '1.2.0' as const,
+  sdkVersion: '1.3.0' as const,
   isOrbit: true as const,
 
   env: {
@@ -188,6 +249,27 @@ const orbitSDK = {
   multiplayer: {
     getNakamaSession: (): Promise<OrbitSdkNakamaSession> =>
       ipcRenderer.invoke('orbit:sdk:multiplayer:getNakamaSession'),
+    listStudioMembers: (options?: { includeSelf?: boolean }): Promise<OrbitSdkStudioMember[]> =>
+      ipcRenderer.invoke('orbit:sdk:multiplayer:listStudioMembers', options ?? {}),
+    sendRoomInvite: (input: OrbitSdkRoomInviteInput): Promise<OrbitSdkRoomInviteResult> =>
+      ipcRenderer.invoke('orbit:sdk:multiplayer:sendRoomInvite', input),
+    getLaunchRoom: (): Promise<OrbitSdkRoomJoinPayload | null> =>
+      ipcRenderer.invoke('orbit:sdk:multiplayer:getLaunchRoom'),
+    onRoomJoin: (listener: (payload: OrbitSdkRoomJoinPayload) => void): (() => void) => {
+      roomJoinListeners.add(listener);
+      if (bufferedRoomJoin) {
+        const pending = bufferedRoomJoin;
+        bufferedRoomJoin = null;
+        queueMicrotask(() => {
+          if (roomJoinListeners.has(listener)) {
+            listener(pending);
+          }
+        });
+      }
+      return () => {
+        roomJoinListeners.delete(listener);
+      };
+    },
   },
 
   cloud: {

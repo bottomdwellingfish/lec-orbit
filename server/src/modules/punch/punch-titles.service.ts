@@ -27,6 +27,7 @@ import {
 } from './entities/punch-cards.entities.js';
 import { PunchUserEntity } from './entities/punch-core.entities.js';
 import { PunchAuthGuard, PunchCurrentUser, type PunchAuthUser } from './punch-auth.guard.js';
+import { assessmentEnrollYears } from './punch-shared.util.js';
 import {
   TITLE_BY_ID,
   TITLE_CATALOG,
@@ -96,15 +97,30 @@ export class PunchTitlesService {
     this.teamCache.delete(teamId);
   }
 
-  /** 获取当前登录成员的完整称号面板（与 LecPunch GET /titles/me 契约 100% 一致）。 */
+  /** 获取当前登录成员的完整称号面板（非近三级成员仍可浏览全量 11 项称号图鉴，但不参与解锁与佩戴）。 */
   async getMyTitles(teamId: string, userId: string) {
     const snapshot = await this.computeTeamSnapshot(teamId, true);
     const mine = snapshot.byUserId.get(userId);
+    if (!mine) {
+      return {
+        weekKey: snapshot.weekKey,
+        eligible: false,
+        equippedTitleId: null,
+        displayTitles: [],
+        catalog: TITLE_CATALOG.map((def) => ({
+          ...toMemberTitleBadge(def),
+          unlocked: false,
+          equipped: false,
+          progressText: '仅大一至大三可解锁',
+        })),
+      };
+    }
     return {
       weekKey: snapshot.weekKey,
-      equippedTitleId: mine?.equippedTitleId ?? null,
-      displayTitles: mine?.displayTitles ?? [],
-      catalog: mine?.catalog ?? [],
+      eligible: true,
+      equippedTitleId: mine.equippedTitleId,
+      displayTitles: mine.displayTitles,
+      catalog: mine.catalog,
     };
   }
 
@@ -282,7 +298,11 @@ export class PunchTitlesService {
       return cached;
     }
 
-    const members = await this.userRepo.find({ where: { teamId, status: 'active' } });
+    const allActive = await this.userRepo.find({ where: { teamId, status: 'active' } });
+    const ssoActive = allActive.filter((m) => Boolean(m.logtoUserId));
+    // 称号体系仅针对大一至大三（最近 3 级），其他往届成员不纳入计算
+    const eligibleGrades = new Set(assessmentEnrollYears(ssoActive.map((m) => m.enrollYear)));
+    const members = ssoActive.filter((m) => eligibleGrades.has(m.enrollYear));
     if (members.length === 0) {
       const empty: CachedTeamTitles = { computedAt: Date.now(), weekKey, byUserId: new Map() };
       this.teamCache.set(teamId, empty);

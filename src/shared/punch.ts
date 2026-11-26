@@ -105,6 +105,8 @@ export interface TitleEvaluationItem extends MemberTitleBadge {
 
 export interface MyTitlesView {
   weekKey: string;
+  /** 是否处于大一至大三称号判定范围内（false 表示往届/毕业成员仅可浏览图鉴） */
+  eligible?: boolean;
   equippedTitleId: string | null;
   displayTitles: MemberTitleBadge[];
   catalog: TitleEvaluationItem[];
@@ -282,6 +284,9 @@ export interface CardGameView {
   };
   freeRemaining: number;
   giftDraws: number;
+  weeklyPaidDrawsUsed?: number;
+  weeklyPaidDrawsLimit?: number;
+  coinCostPerDraw?: number;
   pity: { sinceSR: number; sinceSSR: number; srRemaining: number; ssrRemaining: number };
   collection: CardCollectionItem[];
   players: CardGamePlayer[];
@@ -360,9 +365,8 @@ export function formatReadableDuration(totalSeconds: number): string {
 }
 
 /**
- * 统一成员展示名称：LecPunch 的 displayName 往往是成员自定义昵称，realName 为真实姓名。
- * - 若同时存在真名与不同的昵称，展示「真名（昵称）」；
- * - 否则优先展示真名，缺失时回退昵称或用户名。
+ * 统一成员展示名称：优先展示真实姓名，不再拼接 LecPunch 历史昵称；
+ * 缺少真名时依次回退昵称、用户名与默认称呼。
  */
 export function formatMemberDisplayName(member: {
   realName?: unknown;
@@ -373,11 +377,5 @@ export function formatMemberDisplayName(member: {
   const nickname = typeof member.displayName === 'string' ? member.displayName.trim() : '';
   const username = typeof member.username === 'string' ? member.username.trim() : '';
 
-  if (realName) {
-    if (nickname && nickname !== realName) {
-      return `${realName}（${nickname}）`;
-    }
-    return realName;
-  }
-  return nickname || username || '工作室成员';
+  return realName || nickname || username || '工作室成员';
 }

@@ -239,6 +239,24 @@ export const MiniAppBoundsSchema = z.object({
   height: z.number().int().min(0),
 });
 
+export const MiniAppLaunchRoomContextSchema = z.object({
+  inviteId: z.string().trim().min(1).max(64),
+  appId: MiniAppIdSchema,
+  roomId: z.string().trim().min(1).max(128),
+  roomName: z.string().trim().max(64).optional(),
+  mode: MiniAppDisplayModeSchema.optional(),
+  message: z.string().trim().max(140).optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
+  inviter: z.object({
+    userId: z.string().trim().min(1).max(64),
+    username: z.string().trim().max(64).optional(),
+    displayName: z.string().trim().min(1).max(64),
+    avatar: z.string().max(1024).optional(),
+  }),
+  acceptedAt: z.string().min(1).max(64),
+});
+export type MiniAppLaunchRoomContext = z.infer<typeof MiniAppLaunchRoomContextSchema>;
+
 export interface MiniAppLaunchInput {
   appId: string;
   mode?: MiniAppDisplayMode;
@@ -251,6 +269,8 @@ export interface MiniAppLaunchInput {
     manifest?: OrbitAppManifest;
     iconUrl?: string;
   };
+  /** 通过组队邀请直达房间时透传的房间上下文，供容器冷启动/热进房派发。 */
+  launchRoom?: MiniAppLaunchRoomContext;
 }
 
 export interface MiniAppLaunchLocalDirInput {
@@ -303,6 +323,12 @@ export interface MiniAppCatalogItem {
   status: 'draft' | 'published' | 'suspended';
   featuredRank: number;
   playCount: number;
+  uniquePlayers?: number;
+  avgRating?: number | null;
+  ratingCount?: number;
+  myRatingChances?: number;
+  myRatingScore?: number | null;
+  activePlayerCount?: number;
   activeVersion?: MiniAppVersionItem | null;
   latestVersion?: MiniAppVersionItem | null;
   pendingVersion?: MiniAppVersionItem | null;

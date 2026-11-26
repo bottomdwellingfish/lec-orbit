@@ -20,7 +20,7 @@ import {
   Settings,
   Users,
 } from '@lec-space/icons';
-import { Compass, Gamepad2, Rss, Sparkles, X } from 'lucide-react';
+import { Compass, Gamepad2, Sparkles, X } from 'lucide-react';
 import { formatReadableDuration, getCurrentIsoWeek } from '@shared/punch';
 import { evaluateFocusReminder } from '@shared/reminders';
 import { compareOrbitSemver } from '@shared/updateChangelog';
@@ -385,7 +385,6 @@ export function App(): JSX.Element {
       { id: 'punch-cards', label: '卡牌工坊', icon: <Sparkles size={17} /> },
       { id: 'punch-studio', label: '工作室', icon: <Users size={17} /> },
       { id: 'doc', label: '团队文档', icon: <BookOpen size={17} /> },
-      { id: 'blogs', label: '成员博客', icon: <Rss size={17} /> },
       { id: 'hub', label: '工坊', icon: <Gamepad2 size={17} />, badgeCount: hubRuntime.apps.length || undefined },
       { id: 'inbox', label: '通知中心', icon: <Bell size={17} />, badgeCount: unreadCount },
       { id: 'products', label: '应用导航', icon: <Compass size={17} /> },
@@ -544,18 +543,22 @@ export function App(): JSX.Element {
             </div>
 
             <nav className={styles.nav} aria-label="主导航">
-              {navItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`${styles.navItem} ${activeTab === item.id ? styles.navItemActive : ''}`}
-                  onClick={() => setActiveTab(item.id)}
-                >
-                  <span className={styles.navIcon}>{item.icon}</span>
-                  <span className={styles.navLabel}>{item.label}</span>
-                  {item.badgeCount ? <Badge count={item.badgeCount} /> : null}
-                </button>
-              ))}
+              {navItems.map((item) => {
+                const isActive =
+                  activeTab === item.id || (item.id === 'punch-studio' && activeTab === 'blogs');
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
+                    onClick={() => setActiveTab(item.id)}
+                  >
+                    <span className={styles.navIcon}>{item.icon}</span>
+                    <span className={styles.navLabel}>{item.label}</span>
+                    {item.badgeCount ? <Badge count={item.badgeCount} /> : null}
+                  </button>
+                );
+              })}
             </nav>
 
             {updateInfo &&

@@ -288,6 +288,30 @@ export class NotificationsService {
       await this.docBridge.grantEditorAccess(pageId, requesterId, user.userId);
     }
 
+    // 工坊组队邀请：接受前校验邀请有效期
+    if (record.eventType === 'hub.room_invite' && decision === 'approve') {
+      const expiresAt = typeof payload.expiresAt === 'string' ? Date.parse(payload.expiresAt) : NaN;
+      if (Number.isFinite(expiresAt) && Date.now() > expiresAt) {
+        const expiredAt = new Date();
+        record.actionStatus = 'expired';
+        record.actionBy = user.userId;
+        record.actionAt = expiredAt;
+        await this.notifRepo.save(record);
+        await this.markRead(user.userId, notifId);
+        void this.hub.pushToUser(user.userId, {
+          type: 'notification.updated',
+          payload: {
+            id: notifId,
+            actionStatus: 'expired',
+            actionBy: user.userId,
+            actionAt: expiredAt.toISOString(),
+            isRead: true,
+          },
+        });
+        throw new BadRequestException('该组队邀请已过期，请让队友重新发起邀请');
+      }
+    }
+
     const nextStatus = decision === 'approve' ? 'approved' : 'denied';
     const now = new Date();
     const note = (noteRaw ?? '').trim();
@@ -310,6 +334,59 @@ export class NotificationsService {
         isRead: true,
       },
     });
+
+    if (record.eventType === 'hub.room_invite') {
+      const inviterId = String(payload.inviterId ?? '');
+      const appId = String(payload.appId ?? '');
+      const appName = String(payload.appName ?? appId);
+      const roomId = String(payload.roomId ?? '');
+      const roomName = String(payload.roomName ?? '');
+      if (inviterId && inviterId !== user.userId) {
+        await this.createAndPush({
+          sourceApp: 'orbit',
+          eventType: 'hub.room_invite_result',
+          title:
+            decision === 'approve'
+              ? `${user.displayName} 已接受《${appName}》组队邀请`
+              : `${user.displayName} 婉拒了《${appName}》组队邀请`,
+          body:
+            decision === 'approve'
+              ? `对方正在进入房间 ${roomName || roomId}，准备开局吧！`
+              : `${user.displayName} 暂时无法加入房间 ${roomName || roomId}${note ? `（${note}）` : ''}`,
+          payload: {
+            inviteId: notifId,
+            appId,
+            appName,
+            roomId,
+            roomName: roomName || undefined,
+            decision: nextStatus,
+            responderId: user.userId,
+            responderName: user.displayName,
+            responderAvatar: user.avatar,
+          },
+          targetUserId: inviterId,
+        });
+        // 同步向邀请人游戏容器推送实时回执事件，便于房主界面即时感知
+        void this.hub.pushToUser(inviterId, {
+          type: 'miniapp.realtime',
+          payload: {
+            appId,
+            roomId,
+            event: 'orbit.invite.responded',
+            payload: {
+              inviteId: notifId,
+              decision: nextStatus,
+              userId: user.userId,
+              username: user.username,
+              displayName: user.displayName,
+              avatar: user.avatar,
+            },
+            ts: now.getTime(),
+          },
+        });
+      }
+      return { ok: true, id: notifId, actionStatus: nextStatus };
+    }
 
     if (requesterId) {
       const resultTitle =

@@ -314,7 +314,8 @@ export class PunchCardsService {
       players: activeMembers.map((m) => ({
         id: m.id,
         username: m.username,
-        name: m.displayName,
+        // 统一优先展示真实姓名，去除 LecPunch 历史昵称
+        name: m.realName?.trim() || m.displayName,
         enrollYear: m.enrollYear,
       })),
       baseSeconds,

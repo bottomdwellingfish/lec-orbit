@@ -19,10 +19,12 @@ export interface OrbitEndpoints {
 
 declare const __ORBIT_API_BASE__: string | undefined;
 declare const __ORBIT_WS_URL__: string | undefined;
+declare const __PUNCH_API_BASE__: string | undefined;
 declare const __BLOG_API_BASE__: string | undefined;
 
 const definedApiBase = typeof __ORBIT_API_BASE__ !== 'undefined' ? __ORBIT_API_BASE__ : '';
 const definedWsUrl = typeof __ORBIT_WS_URL__ !== 'undefined' ? __ORBIT_WS_URL__ : '';
+const definedPunchApi = typeof __PUNCH_API_BASE__ !== 'undefined' ? __PUNCH_API_BASE__ : '';
 const definedBlogApi = typeof __BLOG_API_BASE__ !== 'undefined' ? __BLOG_API_BASE__ : '';
 
 const orbitApiBase =
@@ -33,6 +35,10 @@ const orbitWsUrl =
   definedWsUrl ||
   (typeof process !== 'undefined' ? process.env.ORBIT_WS_URL || process.env.VITE_ORBIT_WS_URL : undefined) ||
   orbitApiBase.replace(/^http/, 'ws') + '/api/v1/ws';
+const punchApiBase =
+  definedPunchApi ||
+  (typeof process !== 'undefined' ? process.env.PUNCH_API_BASE || process.env.VITE_PUNCH_API_BASE : undefined) ||
+  'https://punch.lecspace.top/api';
 const blogApiBase = parseBlogUrl(
   definedBlogApi ||
   (typeof process !== 'undefined' ? process.env.BLOG_API_BASE || process.env.VITE_BLOG_API_BASE : undefined),
@@ -43,7 +49,7 @@ export const ORBIT_ENDPOINTS: OrbitEndpoints = {
   ssoEndpoint: 'https://sso.lecspace.top',
   ssoClientId: 'y6dzplzjq61kebk84e1as',
   ssoOrganizationId: 'lec-studio',
-  punchApiBase: 'https://punch.lecspace.top/api',
+  punchApiBase,
   punchWebUrl: 'https://punch.lecspace.top',
   punchApiResource: 'https://api.lecpunch.lec.org',
   docWebUrl: 'https://doc.lecspace.top',

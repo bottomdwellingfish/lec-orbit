@@ -137,6 +137,65 @@ await socket.sendMatchState(
 );
 ```
 
+### 3.5 一键邀请工作室同学组队并直达房间（SDK v1.3.0+）
+
+不想让队友手动复制粘贴房间号？现在只需 3 步即可实现**「游戏内选队友 → Orbit 弹窗直推 → 点接受自动打开游戏并直接进房」**：
+
+```ts
+import { getOrbitSDK, type OrbitRoomJoinPayload } from './orbit-sdk';
+
+const sdk = getOrbitSDK();
+
+// ① 在组队弹窗中拉取工作室同学列表（正在玩本游戏的同学会自动排在最前）
+const teammates = (await sdk.multiplayer?.listStudioMembers?.()) ?? [];
+
+// ② 房主建房后，一键给选中的同学发组队邀请
+async function inviteTeammates(roomId: string, selectedUserIds: string[]) {
+  await sdk.multiplayer?.sendRoomInvite?.({
+    toUserIds: selectedUserIds,
+    roomId,
+    roomName: '工作室开黑房',
+    message: '3 缺 1，速来！',
+    mode: 'standalone',
+    meta: { map: 'arena-01' }, // 自定义透传参数，队友进房时原样收到
+  });
+  await sdk.ui.toast('组队邀请已发送，等待队友接受', 'success');
+}
+
+// ③ 队友点「接受并进房」后，冷启动 + 热进房统一自动加入对应房间
+const seenInviteIds = new Set<string>();
+async function autoEnterRoom(payload: OrbitRoomJoinPayload) {
+  if (seenInviteIds.has(payload.inviteId)) return;
+  seenInviteIds.add(payload.inviteId);
+  const { socket } = await connectNakama();
+  const match = await socket.joinMatch(payload.roomId);
+  await sdk.ui.toast(`已加入 ${payload.inviter.displayName} 的房间`, 'success');
+  enterMatchScene(match, payload.meta);
+}
+
+// 游戏初始化时调用：同时兼容冷启动（未打开过游戏）与热进房（游戏已开着）
+async function setupOrbitRoomInviteListener() {
+  const launchRoom = await sdk.multiplayer?.getLaunchRoom?.();
+  if (launchRoom) {
+    await autoEnterRoom(launchRoom);
+  }
+  return sdk.multiplayer?.onRoomJoin?.((payload) => {
+    void autoEnterRoom(payload);
+  });
+}
+
+// （可选）房主监听队友接受/婉拒的实时回执
+sdk.realtime?.onMessage((msg) => {
+  if (msg.event === 'orbit.invite.responded') {
+    console.log('收到邀请回执:', msg.payload);
+  }
+});
+```
+
+::: tip 浏览器本地开发调试技巧
+在普通浏览器（非 Orbit 容器）预览时，`getOrbitSDK()` 会自动提供模拟队友列表；在浏览器 URL 后追加 `?orbit_room=test-123` 即可测试冷启动 `getLaunchRoom()` 自动进房逻辑。
+:::
+
 ### 4. 自动匹配（Matchmaker）
 
 想做「点击开始匹配 → 凑齐 2~4 人自动开局」时，务必在 `stringProperties` 中带上你的**应用唯一 `app` 标识**，避免不同工坊小游戏的玩家互相匹配到一起：

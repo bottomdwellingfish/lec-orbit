@@ -1,12 +1,12 @@
 # `window.orbitSDK` API 参考
 
-在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.2.0`）。
+在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.3.0`）。
 如果你使用 TypeScript 或需要在普通浏览器中也能无报错预览，推荐直接引入 `apps/lec-orbit/sdk/orbit-sdk.ts` 的 `getOrbitSDK()`，它会在非 Orbit 环境下自动降级到 `localStorage` 与模拟用户。
 
 ## 基础属性
 
 ```ts
-window.orbitSDK.sdkVersion // '1.2.0'
+window.orbitSDK.sdkVersion // '1.3.0'
 window.orbitSDK.isOrbit    // true（浏览器降级封装中为 false）
 ```
 
@@ -201,6 +201,86 @@ const client = new Client('', nk.host, String(nk.port), nk.useSSL);
 const session = Session.restore(nk.token, nk.refreshToken);
 const socket = client.createSocket(nk.useSSL, false);
 await socket.connect(session, true);
+```
+
+### `multiplayer.listStudioMembers(options?)`（v1.3.0+）
+拉取当前可邀请组队的工作室活跃成员列表（自动标注谁正在玩本游戏或工坊其他作品，按在玩优先 + 届别降序排序；默认过滤掉自己，传入 `{ includeSelf: true }` 可包含本人）。需声明 `"user.profile"` 权限：
+
+```ts
+interface OrbitStudioMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  isCaptain: boolean;
+  isPlayingThisApp: boolean;
+  playingAppName: string | null;
+  isSelf: boolean;
+}
+
+const teammates = await window.orbitSDK.multiplayer!.listStudioMembers!();
+```
+
+### `multiplayer.sendRoomInvite(input)`（v1.3.0+）
+向工作室同学发送实时组队邀请（支持一次邀请 `1~8` 人，10 分钟内限发 15 人次防骚扰）。应用 ID 由主进程根据容器身份强绑定，无法伪造：
+
+```ts
+const res = await window.orbitSDK.multiplayer!.sendRoomInvite!({
+  toUserIds: ['teammate-user-id'],
+  roomId: match.match_id,
+  roomName: '快棋 1 号桌',
+  message: '来一把 5 分钟快棋！',
+  mode: 'standalone',     // 可选：对方点接受时优先以此形态打开
+  expiresInSeconds: 600,  // 可选：60~3600 秒，默认 600 秒
+  meta: { side: 'black' }, // 可选：任意业务元数据，对方进房时原样带回
+});
+```
+
+受邀同学的 Orbit 客户端会立即弹出**实时通知 Toast** 并在**通知中心**生成可操作卡片；点击**「接受并进房」**后：
+1. 若对方尚未下载本作品，Orbit 自动下载并安装最新线上版本；
+2. 若作品未启动，冷启动打开并通过 `getLaunchRoom()` 与 `onRoomJoin()` 传入房间上下文；
+3. 若作品已在运行同版本，直接聚焦窗口并通过 `onRoomJoin()` 实时热进房（零刷新）；
+4. 同时向房主推送 `orbit.invite.responded` 实时事件（可通过 `window.orbitSDK.realtime.onMessage` 接收）。
+
+### `multiplayer.getLaunchRoom()` 与 `multiplayer.onRoomJoin(listener)`（v1.3.0+）
+接收「接受并进房」带来的目标房间上下文：
+
+```ts
+interface OrbitRoomJoinPayload {
+  inviteId: string;
+  appId: string;
+  roomId: string;
+  roomName?: string;
+  mode?: 'sidepanel' | 'workspace' | 'standalone';
+  message?: string;
+  meta?: Record<string, unknown>;
+  inviter: {
+    userId: string;
+    username?: string;
+    displayName: string;
+    avatar?: string;
+  };
+  acceptedAt: string;
+}
+
+const handledInvites = new Set<string>();
+async function handleRoomJoin(payload: OrbitRoomJoinPayload) {
+  if (handledInvites.has(payload.inviteId)) return;
+  handledInvites.add(payload.inviteId);
+  await joinRoomById(payload.roomId, payload.meta);
+}
+
+// 1. 冷启动时主动拉取（防止页面异步初始化晚于容器 did-stop-loading）
+const initialRoom = await window.orbitSDK.multiplayer?.getLaunchRoom?.();
+if (initialRoom) {
+  void handleRoomJoin(initialRoom);
+}
+
+// 2. 监听热进房（应用已开着时再次接受新邀请）
+const offJoin = window.orbitSDK.multiplayer?.onRoomJoin?.((payload) => {
+  void handleRoomJoin(payload);
+});
 ```
 
 ---

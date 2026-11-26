@@ -1,45 +1,221 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 24px 28px 32px;
+  gap: 14px;
+  padding: 18px 22px 26px;
   height: 100%;
   overflow-y: auto;
 }
 
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.titleLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .heading {
   margin: 0;
-  font-size: 26px;
-  font-weight: 650;
+  font-size: 22px;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 
+.statChips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.statChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--orbit-text-muted);
+}
+
+.statChipOnline {
+  background: rgba(34, 197, 94, 0.13);
+  border-color: rgba(34, 197, 94, 0.28);
+  color: #15803d;
+}
+:global([data-theme='dark']) .statChipOnline {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(74, 222, 128, 0.34);
+  color: #86efac;
+}
+
 .subheading {
-  margin: 4px 0 0;
-  font-size: 13px;
+  margin: 0;
+  font-size: 12.5px;
   color: var(--orbit-text-muted);
 }
 
 .actions {
   display: flex;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 双栏高密度总览网格 */
+.boardGrid {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.95fr) minmax(380px, 1.25fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.rightColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+  min-width: 0;
+}
+
+.rankingPanel,
+.membersPanel {
+  min-height: 220px;
+}
+
+.panelHeadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.panelTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--orbit-text);
+  line-height: 1.3;
 }
 
 .cardTitle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
+.miniSwitch,
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.chipBtn {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface-strong);
+  color: var(--orbit-text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+
+  &:hover {
+    color: var(--orbit-text);
+    border-color: rgba(10, 132, 255, 0.35);
+  }
+}
+
+.chipBtnActive {
+  background: rgba(10, 132, 255, 0.14);
+  border-color: rgba(10, 132, 255, 0.38);
+  color: #0a84ff;
+  font-weight: 600;
+}
+
+.gradeSelectWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface-strong);
+  color: var(--orbit-text-muted);
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+
+  &:hover {
+    color: var(--orbit-text);
+    border-color: rgba(10, 132, 255, 0.35);
+  }
+}
+
+.gradeSelectActive {
+  background: rgba(10, 132, 255, 0.14);
+  border-color: rgba(10, 132, 255, 0.38);
+  color: #0a84ff;
+}
+
+.gradeSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 22px 3px 10px;
+  cursor: pointer;
+  line-height: inherit;
+}
+
+.gradeSelectActive .gradeSelect {
+  font-weight: 600;
+}
+
+.gradeSelectArrow {
+  position: absolute;
+  right: 7px;
+  pointer-events: none;
+  opacity: 0.78;
+}
+
+/* ── 排行榜高密度列表 ── */
 .rankList,
 .eventList {
   list-style: none;
@@ -47,19 +223,12 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
 
-.rankRow,
-.eventRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: var(--orbit-surface);
-  border: 1px solid var(--orbit-border);
+.rankItem {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
 
 .rankRowBtn {
@@ -67,186 +236,328 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: var(--orbit-surface);
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--orbit-surface-strong);
   border: 1px solid var(--orbit-border);
   text-align: left;
   color: inherit;
   cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  transition: border-color 120ms ease, background 120ms ease;
 
   &:hover {
-    border-color: rgba(10, 132, 255, 0.36);
-    background: var(--orbit-surface-strong);
-    transform: translateY(-1px);
+    border-color: rgba(10, 132, 255, 0.38);
+    background: var(--orbit-surface);
   }
+}
+
+.rankLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rankIndex {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-family: var(--orbit-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--orbit-text-muted);
+}
+
+.rankGold {
+  background: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+}
+:global([data-theme='dark']) .rankGold {
+  color: #fcd34d;
+}
+
+.rankSilver {
+  background: rgba(148, 163, 184, 0.22);
+  color: #475569;
+}
+:global([data-theme='dark']) .rankSilver {
+  color: #e2e8f0;
+}
+
+.rankBronze {
+  background: rgba(217, 119, 6, 0.16);
+  color: #9a3412;
+}
+:global([data-theme='dark']) .rankBronze {
+  color: #fdba74;
 }
 
 .rankText {
   display: flex;
   flex-direction: column;
   min-width: 0;
-}
-
-.rowChevron {
-  color: var(--orbit-text-muted);
-  opacity: 0.65;
-  flex-shrink: 0;
-}
-
-.rankLeft {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.rankIndex {
-  width: 24px;
-  text-align: center;
-  font-family: var(--orbit-mono);
-  font-weight: 600;
-  color: var(--orbit-text-muted);
+  flex: 1;
 }
 
 .rankNameRow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.rankName,
-.eventTitle {
-  font-size: 14px;
+.rankName {
+  font-size: 13px;
   font-weight: 600;
+  color: var(--orbit-text);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.rankTeam,
-.eventDesc {
-  margin: 2px 0 0;
-  font-size: 12px;
+.rankTeamInline {
+  font-size: 11px;
   color: var(--orbit-text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.rankRight,
-.eventMeta {
+.rankRight {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .rankDuration {
   font-family: var(--orbit-mono);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--orbit-text);
+  min-width: 58px;
+  text-align: right;
 }
 
-.memberToolbar {
-  display: flex;
+.rowChevron {
+  color: var(--orbit-text-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* ── 头像与在线点 ── */
+.avatarAnchor {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.liteAvatar {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(10, 132, 255, 0.14);
+  border: 1px solid var(--orbit-border);
+  color: var(--orbit-text);
+  font-weight: 600;
+  user-select: none;
 }
 
+.liteAvatarXs {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}
+
+.liteAvatarSmall {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
+.liteAvatarRegular {
+  width: 38px;
+  height: 38px;
+  font-size: 14px;
+}
+
+.liteAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.onlineDotSm {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 1.5px solid var(--orbit-surface-strong);
+}
+
+.memberOnlineDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 2px solid var(--orbit-surface-strong);
+}
+
+/* ── 轻量胶囊 ── */
+.litePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.litePillXs {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.pillSuccess {
+  background: rgba(22, 163, 74, 0.14);
+  border-color: rgba(22, 163, 74, 0.28);
+  color: #15803d;
+}
+:global([data-theme='dark']) .pillSuccess {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(74, 222, 128, 0.34);
+  color: #86efac;
+}
+
+.pillInfo {
+  background: rgba(10, 132, 255, 0.13);
+  border-color: rgba(10, 132, 255, 0.28);
+  color: #0369a1;
+}
+:global([data-theme='dark']) .pillInfo {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.34);
+  color: #7dd3fc;
+}
+
+.pillWarning {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #b45309;
+}
+:global([data-theme='dark']) .pillWarning {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: rgba(251, 191, 36, 0.34);
+  color: #fde68a;
+}
+
+.pillNeutral {
+  background: var(--orbit-surface-strong);
+  border-color: var(--orbit-border);
+  color: var(--orbit-text-muted);
+}
+
+/* ── 成员名录紧凑网格 ── */
 .memberSearchWrap {
-  flex: 1;
-  min-width: 220px;
-  max-width: 380px;
-}
-
-.memberNotice {
-  margin-bottom: 14px;
+  width: 210px;
+  max-width: 100%;
 }
 
 .gradeGroups {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .gradeSection {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .gradeHeader {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
 }
 
 .gradeTitle {
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--orbit-text);
 }
 
 .gradeCount {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--orbit-text-muted);
 }
 
 .memberGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  gap: 7px;
 }
 
 .memberCard {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 10px;
-  padding: 12px 13px;
-  border-radius: 13px;
-  background: var(--orbit-surface);
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: var(--orbit-surface-strong);
   border: 1px solid var(--orbit-border);
   text-align: left;
   color: inherit;
   cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+  transition: border-color 120ms ease, background 120ms ease;
 
   &:hover {
     border-color: rgba(10, 132, 255, 0.38);
-    background: var(--orbit-surface-strong);
-    transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+    background: var(--orbit-surface);
   }
 }
 
 .memberCardTop {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-}
-
-.memberAvatarWrap {
-  position: relative;
-  display: inline-flex;
-  flex-shrink: 0;
-}
-
-.memberOnlineDot {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #22c55e;
-  border: 2px solid var(--orbit-surface-strong);
 }
 
 .memberCardMeta {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   flex: 1;
 }
@@ -254,12 +565,12 @@
 .memberCardNameRow {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
 }
 
 .memberCardName {
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--orbit-text);
   overflow: hidden;
@@ -269,7 +580,7 @@
 
 .memberCardHandle {
   font-family: var(--orbit-mono);
-  font-size: 11.5px;
+  font-size: 10.5px;
   color: var(--orbit-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -280,30 +591,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding-top: 8px;
+  gap: 6px;
+  padding-top: 5px;
   border-top: 1px solid var(--orbit-border);
 }
 
 .memberSocialPills {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 4px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .memberSocialPill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
+  gap: 3px;
+  padding: 1px 5px;
   border-radius: 999px;
-  background: var(--orbit-surface-strong);
+  background: var(--orbit-surface);
   border: 1px solid var(--orbit-border);
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--orbit-text-muted);
-  max-width: 140px;
+  max-width: 108px;
 
   span {
     overflow: hidden;
@@ -312,8 +623,79 @@
   }
 }
 
+.memberBlogPill {
+  cursor: pointer;
+  color: var(--orbit-text);
+  border-color: rgba(10, 132, 255, 0.28);
+  background: rgba(10, 132, 255, 0.08);
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+
+  &:hover {
+    border-color: rgba(10, 132, 255, 0.55);
+    background: rgba(10, 132, 255, 0.16);
+    color: #0a84ff;
+  }
+}
+
 .memberNoSocial {
+  font-size: 10.5px;
+  color: var(--orbit-text-muted);
+  opacity: 0.7;
+}
+
+.memberWeekHours {
+  font-family: var(--orbit-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--orbit-text-muted);
+  flex-shrink: 0;
+}
+
+.memberWeekQualified {
+  color: #15803d;
+}
+:global([data-theme='dark']) .memberWeekQualified {
+  color: #86efac;
+}
+
+/* ── 近期活动紧凑条 ── */
+.eventRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+}
+
+.eventMain {
+  min-width: 0;
+  flex: 1;
+}
+
+.eventTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--orbit-text);
+}
+
+.eventDesc {
+  margin: 2px 0 0;
   font-size: 11.5px;
   color: var(--orbit-text-muted);
-  opacity: 0.75;
+}
+
+.eventMeta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 960px) {
+  .boardGrid {
+    grid-template-columns: 1fr;
+  }
 }
