@@ -385,6 +385,27 @@ export class MiniAppContainerManager {
       clipboard.writeText(z.string().max(50_000).parse(rawText));
     });
 
+    // ── Nakama 游戏联机 BaaS 单点换票 IPC（由 Orbit 服务端隔离持有 Server Key）──
+    ipcMain.handle('orbit:sdk:multiplayer:getNakamaSession', async (event) => {
+      const inst = resolveCaller(event.sender.id);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法获取联机会话');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(`${base}/api/v1/nakama/session`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ appId: inst.appId }),
+      });
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as { error?: string; message?: string } | null;
+        throw new Error(body?.error || body?.message || `获取 Nakama 联机会话失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
     // ── 通用乐币（coin）与本周打卡时长（punch_minutes）受控交易 IPC ──
 
     const showConfirmDialog = (
