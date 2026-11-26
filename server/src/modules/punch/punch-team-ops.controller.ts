@@ -644,15 +644,18 @@ export class PunchTeamOpsController {
 
   // ── LecPunch 站内通知 (/notifications/*) ──
 
-  @Get('notifications/me')
-  async myNotifications(@PunchCurrentUser() user: PunchAuthUser) {
-    const items = await this.notifRepo
+  /** 查询当前用户可见的通知及合并回执表（punch_notification_receipts）后的真实已读状态。 */
+  private async queryScopedNotificationsWithAck(
+    user: PunchAuthUser,
+    opts?: { status?: 'unacked' | 'all'; limit?: number; before?: string },
+  ) {
+    const rawRows = await this.notifRepo
       .createQueryBuilder('n')
       .where('n.team_id = :teamId', { teamId: user.teamId })
       .andWhere(
         user.role === 'admin'
           ? '(n.user_id = :uid OR n.audience IN (:...audiences))'
-          : '(n.user_id = :uid OR n.audience = :all)',
+          : "(n.type <> 'report.submitted' AND (n.user_id = :uid OR n.audience = :all))",
         {
           uid: user.userId,
           all: 'team_members',
@@ -660,17 +663,98 @@ export class PunchTeamOpsController {
         },
       )
       .orderBy('n.created_at', 'DESC')
-      .take(80)
+      .addOrderBy('n.id', 'DESC')
+      .take(300)
       .getMany();
+
+    // 过滤限定接收人列表的群发通知（与原 LecPunch scope 语义完全一致）
+    const scoped = rawRows.filter((n) => {
+      if (n.audience === 'team_members') {
+        if (Array.isArray(n.recipientUserIds) && n.recipientUserIds.length > 0) {
+          return n.recipientUserIds.includes(user.userId);
+        }
+        return true;
+      }
+      if (n.audience === 'team_admin') {
+        return user.role === 'admin';
+      }
+      return n.userId === user.userId;
+    });
+
+    if (scoped.length === 0) return [];
+
+    const receipts = await this.receiptRepo.find({
+      where: {
+        teamId: user.teamId,
+        userId: user.userId,
+        notificationId: In(scoped.map((n) => n.id)),
+      },
+    });
+    const receiptByNotifId = new Map(receipts.map((r) => [r.notificationId, r.readAt]));
+
+    let merged = scoped.map((n) => {
+      // 群发通知的已读状态必须取 punch_notification_receipts，绝不能只看主表 acknowledged_at
+      const effectiveAck =
+        receiptByNotifId.get(n.id) ?? (n.userId === user.userId ? n.acknowledgedAt : null);
+      return {
+        id: n.id,
+        teamId: n.teamId,
+        userId: n.userId,
+        audience: n.audience,
+        type: n.type,
+        title: n.title,
+        message: n.message,
+        payload: n.payload,
+        sourceType: n.sourceType,
+        sourceId: n.sourceId,
+        createdBy: n.createdBy,
+        createdAt: n.createdAt.toISOString(),
+        acknowledgedAt: effectiveAck ? effectiveAck.toISOString() : null,
+      };
+    });
+
+    if (opts?.before) {
+      const idx = merged.findIndex((i) => i.id === opts.before);
+      if (idx >= 0) merged = merged.slice(idx + 1);
+    }
+
+    if (opts?.status === 'unacked') {
+      merged = merged.filter((i) => i.acknowledgedAt === null);
+    }
+
+    const limit = Math.min(Math.max(opts?.limit ?? 80, 1), 100);
+    return merged.slice(0, limit);
+  }
+
+  @Get('notifications/me')
+  async myNotifications(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Query('status') rawStatus?: string,
+    @Query('limit') rawLimit?: string,
+    @Query('before') before?: string,
+  ) {
+    const status: 'unacked' | 'all' = rawStatus === 'all' ? 'all' : 'unacked';
+    const limit = Math.min(Math.max(Number.parseInt(rawLimit ?? '20', 10) || 20, 1), 100);
+    const items = await this.queryScopedNotificationsWithAck(user, {
+      status,
+      limit,
+      before: before?.trim() || undefined,
+    });
     return { items, nextCursor: items[items.length - 1]?.id ?? null };
   }
 
   @Get('notifications/me/unread-count')
   async unreadCount(@PunchCurrentUser() user: PunchAuthUser) {
-    const count = await this.notifRepo.count({
-      where: { teamId: user.teamId, userId: user.userId, acknowledgedAt: null as unknown as Date },
-    });
-    return { count, badgeCount: count };
+    const [unacked, member] = await Promise.all([
+      this.queryScopedNotificationsWithAck(user, { status: 'unacked', limit: 100 }),
+      this.userRepo.findOne({ where: { id: user.userId } }),
+    ]);
+    const count = unacked.length;
+    const badgeCount =
+      member?.adminMessageBadgeEnabled === false
+        ? unacked.filter((n) => n.type !== 'report.submitted').length
+        : count;
+    return { count, badgeCount };
   }
 
   @Patch('notifications/:notificationId/ack')
@@ -678,18 +762,47 @@ export class PunchTeamOpsController {
     @PunchCurrentUser() user: PunchAuthUser,
     @Param('notificationId') notificationId: string,
   ) {
+    const cleanId = notificationId.trim();
+    const notice = await this.notifRepo.findOne({
+      where: { id: cleanId, teamId: user.teamId },
+    });
+    if (!notice) {
+      throw new NotFoundException('通知不存在');
+    }
+
     const now = new Date();
-    await this.notifRepo.update(
-      { id: notificationId.trim(), teamId: user.teamId, userId: user.userId },
-      { acknowledgedAt: now },
-    );
+    // 个人通知同时更新主表 acknowledged_at，群发通知仅写 punch_notification_receipts
+    if (notice.userId === user.userId && !notice.acknowledgedAt) {
+      await this.notifRepo.update(
+        { id: cleanId, teamId: user.teamId, userId: user.userId },
+        { acknowledgedAt: now },
+      );
+    }
     await this.receiptRepo.query(
       `INSERT INTO punch_notification_receipts (id, notification_id, user_id, team_id, read_at)
        VALUES ($1, $2, $3, $4, $5) ON CONFLICT (notification_id, user_id) DO NOTHING`,
-      [newObjectIdHex(), notificationId.trim(), user.userId, user.teamId, now],
+      [newObjectIdHex(), cleanId, user.userId, user.teamId, now],
     );
+    const receipt = await this.receiptRepo.findOne({
+      where: { notificationId: cleanId, userId: user.userId },
+    });
+    const effectiveAck = notice.acknowledgedAt ?? receipt?.readAt ?? now;
     this.broadcastNotificationChange(user.teamId, { userId: user.userId });
-    return { ok: true, acknowledgedAt: now.toISOString() };
+    return {
+      id: notice.id,
+      teamId: notice.teamId,
+      userId: notice.userId,
+      audience: notice.audience,
+      type: notice.type,
+      title: notice.title,
+      message: notice.message,
+      payload: notice.payload,
+      sourceType: notice.sourceType,
+      sourceId: notice.sourceId,
+      createdBy: notice.createdBy,
+      createdAt: notice.createdAt.toISOString(),
+      acknowledgedAt: effectiveAck.toISOString(),
+    };
   }
 
   @Post('notifications/admin/notices')
