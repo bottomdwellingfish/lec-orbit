@@ -295,6 +295,17 @@ function registerIpcHandlers(): void {
       .parse(raw);
     return scanNearbyWifi(options);
   });
+  ipcMain.handle('orbit:system:openLocationSettings', async () => {
+    const targetUrl =
+      process.platform === 'win32'
+        ? 'ms-settings:privacy-location'
+        : process.platform === 'darwin'
+          ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices'
+          : '';
+    if (!targetUrl) return false;
+    await shell.openExternal(targetUrl);
+    return true;
+  });
   ipcMain.handle('orbit:system:getUpdateState', () => updater.getState());
   ipcMain.handle('orbit:system:checkUpdate', () => updater.check());
   ipcMain.handle('orbit:system:downloadUpdate', () => updater.download());

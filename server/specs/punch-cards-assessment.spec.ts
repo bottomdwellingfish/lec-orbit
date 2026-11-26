@@ -78,12 +78,25 @@ describe('卡牌工坊 21 张卡完整引擎（对接新版 coin 乐币）', () 
     const week = '2026-11-23';
     for (const id of ['u1', 'u2', 'u3']) getPlayerWeek(state, id, week);
 
-    // 1. 赠卡
-    state.members.u1.inventory['r-add'] = 1;
+    // 1. 赠卡（同年级 & 跨年级均允许，禁止赠送给自己）
+    state.members.u1.inventory['r-add'] = 2;
     applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u2' }, makeCtx());
-    expect(state.members.u1.inventory['r-add']).toBe(0);
+    expect(state.members.u1.inventory['r-add']).toBe(1);
     expect(state.members.u2.inventory['r-add']).toBe(1);
     expect(state.members.u2.discovered).toContain('r-add');
+
+    // 跨年级赠卡（2025 级 u1 -> 2024 级 u4）
+    applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u4' }, makeCtx());
+    expect(state.members.u1.inventory['r-add']).toBe(0);
+    expect(state.members.u4.inventory['r-add']).toBe(1);
+    expect(state.members.u4.discovered).toContain('r-add');
+
+    // 禁止赠送给自己
+    state.members.u1.inventory['r-add'] = 1;
+    expect(() =>
+      applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u1' }, makeCtx()),
+    ).toThrow('请选择团队中的其他有效成员');
+    state.members.u1.inventory['r-add'] = 0;
 
     // 2. 问号卡随机换卡（绝不抽出 r-mystery 自身）
     state.members.u1.inventory['r-mystery'] = 1;
