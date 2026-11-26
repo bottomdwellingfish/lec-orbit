@@ -81,6 +81,14 @@ const RawEnvSchema = z.object({
 
   GITHUB_TOKEN: envStr(''),
 
+  // Nakama 游戏联机 BaaS 接入配置（内网换票 + 公网 SDK 连接端点）
+  NAKAMA_INTERNAL_URL: envStr('http://nakama.lec-orbit-production.svc.cluster.local:7350'),
+  NAKAMA_PUBLIC_HOST: envStr('orbit.lecspace.top'),
+  NAKAMA_PUBLIC_PORT: envStr('443'),
+  NAKAMA_PUBLIC_USE_SSL: envBool(true),
+  NAKAMA_SERVER_KEY: envStr(''),
+  NAKAMA_HTTP_KEY: envStr(''),
+
   // Economy（coin 乐币与 punch_minutes 打卡时长交易底层配置）
   ECONOMY_CREDENTIAL_MASTER_KEY: envStr(''),
   ECONOMY_PUNCH_AFFECTS_ASSESSMENT: envBool(true),
@@ -143,6 +151,15 @@ export interface AppConfig {
   assessmentStartWeek: string;
 
   githubToken: string;
+
+  nakama: {
+    internalUrl: string;
+    publicHost: string;
+    publicPort: string;
+    publicUseSsl: boolean;
+    serverKey: string;
+    httpKey: string;
+  };
 
   economy: {
     credentialMasterKey: string;
@@ -212,6 +229,15 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     assessmentStartWeek: parsed.ASSESSMENT_START_WEEK,
 
     githubToken: parsed.GITHUB_TOKEN,
+
+    nakama: {
+      internalUrl: parsed.NAKAMA_INTERNAL_URL.replace(/\/+$/, ''),
+      publicHost: parsed.NAKAMA_PUBLIC_HOST,
+      publicPort: parsed.NAKAMA_PUBLIC_PORT,
+      publicUseSsl: parsed.NAKAMA_PUBLIC_USE_SSL,
+      serverKey: parsed.NAKAMA_SERVER_KEY,
+      httpKey: parsed.NAKAMA_HTTP_KEY,
+    },
 
     economy: {
       credentialMasterKey: parsed.ECONOMY_CREDENTIAL_MASTER_KEY || parsed.ORBIT_INTERNAL_TOKEN,

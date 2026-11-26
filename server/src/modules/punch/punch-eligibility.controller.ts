@@ -45,11 +45,12 @@ export class PunchEligibilityController {
   ) {}
 
   @Get('admin/entries')
-  list(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.repo.find({
+  async list(@PunchCurrentUser() user: PunchAuthUser) {
+    const items = await this.repo.find({
       where: { teamId: user.teamId },
       order: { updatedAt: 'DESC' },
     });
+    return { items };
   }
 
   @Post('admin/entries')

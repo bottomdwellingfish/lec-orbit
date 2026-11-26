@@ -1,12 +1,12 @@
 # `window.orbitSDK` API 参考
 
-在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.0.0`）。
+在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.1.0`）。
 如果你使用 TypeScript 或需要在普通浏览器中也能无报错预览，推荐直接引入 `apps/lec-orbit/sdk/orbit-sdk.ts` 的 `getOrbitSDK()`，它会在非 Orbit 环境下自动降级到 `localStorage` 与模拟用户。
 
 ## 基础属性
 
 ```ts
-window.orbitSDK.sdkVersion // '1.0.0'
+window.orbitSDK.sdkVersion // '1.1.0'
 window.orbitSDK.isOrbit    // true（浏览器降级封装中为 false）
 ```
 
@@ -160,4 +160,67 @@ await window.orbitSDK.ui.toast('已复制到剪贴板', 'success');
 ```ts
 const offPause = window.orbitSDK.lifecycle.onPause(() => pauseGame());
 const offResume = window.orbitSDK.lifecycle.onResume(() => resumeGame());
+```
+
+---
+
+## `multiplayer` — 内置多人联机 BaaS（Nakama）
+
+Orbit 已内置托管 **Nakama 3.26.0** 联机后端并与工作室 LecSSO 打通，小游戏无需自建服务端即可拥有实时房间、自动匹配、排行榜、聊天与云端对象存储。
+
+> 在连接 Nakama 前，请在 `orbit.manifest.json` 的 `permissions.networkDomains` 中添加 `"orbit.lecspace.top"`。完整建房与匹配实战教程见 [多人联机指南（Nakama BaaS）](/guide/multiplayer)。
+
+### `multiplayer.getNakamaSession()`
+通过 Orbit 后端单点换票，获取当前已登录工作室成员对应的 Nakama 短期会话凭证（前端零 Server Key）：
+
+```ts
+interface OrbitNakamaSession {
+  host: string;         // 例如 "orbit.lecspace.top"
+  port: string;         // 例如 "443"
+  useSSL: boolean;      // true
+  token: string;        // Nakama JWT 访问令牌
+  refreshToken: string; // Nakama Refresh Token
+  userId: string;       // Nakama 内部用户 UUID
+  orbitUserId: string;  // 对应的 LecSSO / Orbit 用户 ID
+  username: string;     // Nakama 用户名
+  displayName: string;  // 工作室展示昵称（自动同步）
+  expiresAt: number;    // 令牌过期毫秒时间戳
+  created: boolean;     // 是否为该成员首次创建 Nakama 账号
+}
+
+const nk = await window.orbitSDK.multiplayer!.getNakamaSession();
+```
+
+配合官方 `@heroiclabs/nakama-js` 即可直接连接：
+
+```ts
+import { Client, Session } from '@heroiclabs/nakama-js';
+
+const nk = await window.orbitSDK.multiplayer!.getNakamaSession();
+const client = new Client('', nk.host, String(nk.port), nk.useSSL);
+const session = Session.restore(nk.token, nk.refreshToken);
+const socket = client.createSocket(nk.useSSL, false);
+await socket.connect(session, true);
+```
+
+---
+
+## `economy` — 通用乐币与受控对赌 / 打赏
+
+> 需按需在 `orbit.manifest.json` 的 `permissions.scopes` 中声明 `economy.read`、`economy.wager.coin`、`economy.wager.punch` 或 `economy.tip`。涉及扣款与结算的操作均由 Orbit 桌面主进程弹出原生二次确认框并由服务端强校验限额。
+
+### 方法列表
+
+| 方法 | 所需 Scope | 说明 |
+| --- | --- | --- |
+| `economy.getWallet()` | `economy.read`（或任意 `economy.*`） | 查询当前成员乐币余额、冻结金额、本周打卡时长及剩余额度 |
+| `economy.wager.create(input)` | `economy.wager.coin` / `economy.wager.punch` | 发起托管对赌单（支持 `'coin'` 乐币或 `'punch_minutes'` 本周打卡分钟） |
+| `economy.wager.accept(orderId)` | `economy.wager.coin` / `economy.wager.punch` | 接受对手发起的对赌单并锁定双方担保资产 |
+| `economy.wager.cancel(orderId)` | `economy.wager.coin` / `economy.wager.punch` | 取消尚未被接受的待确认对赌单 |
+| `economy.wager.get(orderId)` | `economy.read` / `economy.wager.*` | 查询单笔对赌单当前状态与结果 |
+| `economy.tip(input)` | `economy.tip` | 向指定工作室成员发起点对点乐币打赏 |
+
+```ts
+const wallet = await window.orbitSDK.economy!.getWallet();
+console.log('当前可用乐币:', wallet.coinBalance, '本周可交易打卡分钟:', wallet.weeklyTradeMinutes);
 ```

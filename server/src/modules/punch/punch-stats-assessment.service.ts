@@ -690,42 +690,61 @@ export class PunchStatsAssessmentController {
   ) {}
 
   @Get('stats/me/weekly')
-  myWeekly(@PunchCurrentUser() user: PunchAuthUser, @Query('limit') limit?: string) {
-    return this.service.getUserWeeklyHistory(
+  async myWeekly(@PunchCurrentUser() user: PunchAuthUser, @Query('limit') limit?: string) {
+    const items = await this.service.getUserWeeklyHistory(
       user.teamId,
       user.userId,
       limit ? Number.parseInt(limit, 10) || 24 : 24,
     );
+    return {
+      items,
+      weeklyGoalSeconds: weeklyGoalSeconds(user.enrollYear),
+    };
   }
 
   @Get('stats/team/current-week')
   teamCurrentWeek(
     @PunchCurrentUser() user: PunchAuthUser,
     @Query('enrollYear') rawEnrollYear?: string,
+    @Query('sameGrade') sameGrade?: string,
   ) {
-    const enrollYear =
-      rawEnrollYear !== undefined && rawEnrollYear.trim() !== ''
-        ? Number.parseInt(rawEnrollYear, 10)
-        : undefined;
-    if (enrollYear !== undefined && !Number.isInteger(enrollYear)) {
-      throw new BadRequestException('enrollYear 必须为整数');
+    let enrollYear: number | undefined;
+    if (sameGrade === 'true') {
+      enrollYear = user.enrollYear;
+    } else if (rawEnrollYear !== undefined && rawEnrollYear.trim() !== '') {
+      enrollYear = Number.parseInt(rawEnrollYear, 10);
+      if (!Number.isInteger(enrollYear)) {
+        throw new BadRequestException('enrollYear 必须为整数');
+      }
     }
     return this.service.getTeamCurrentWeekRanking(user.teamId, enrollYear);
   }
 
   @Get('stats/member/:memberKey/weekly')
-  memberWeekly(
+  async memberWeekly(
     @PunchCurrentUser() user: PunchAuthUser,
     @Param('memberKey') memberKey: string,
     @Query('limit') limit?: string,
   ) {
     const uid = this.usersService.resolveMemberKey(memberKey);
     if (!uid) throw new BadRequestException('无效的 memberKey');
-    return this.service.getUserWeeklyHistory(
+    const member = await this.usersService.findById(uid);
+    if (!member || member.teamId !== user.teamId) {
+      throw new ForbiddenException('不可查看其他团队成员');
+    }
+    const items = await this.service.getUserWeeklyHistory(
       user.teamId,
       uid,
       limit ? Number.parseInt(limit, 10) || 24 : 24,
     );
+    return {
+      member: {
+        memberKey,
+        displayName: member.displayName,
+        role: member.role,
+      },
+      items,
+    };
   }
 
   @Get('assessment/leaderboard')

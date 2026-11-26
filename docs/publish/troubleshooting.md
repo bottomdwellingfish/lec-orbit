@@ -81,3 +81,12 @@
 
 - **体积超过 100MB**：请改用「上传 / 导入 → GitHub Releases 导入」通道（详见 [大包导入说明](/publish/packaging-and-upload#超大包体-100mb-github-releases-导入)）。
 - **路径穿越 / 符号链接报错**：切勿在父级目录使用 `zip -r app.zip ../dist` 这类带 `..` 的相对路径命令，应先 `cd dist` 再执行 `zip -r ../app.zip .`；同时确保包内不含软链接（如 `node_modules` 里的符号链接）。
+
+---
+
+## 8. 使用 Nakama 多人联机报错 `Refused to connect` 或提示无法换取凭证
+
+- **连接 `wss://orbit.lecspace.top/ws` 或 `/v2/...` 被 CSP 拦截（`Refused to connect`）**：在 `orbit.manifest.json` 的 `permissions.networkDomains` 中补充 `"orbit.lecspace.top"` 后刷新容器。
+- **提示「浏览器独立预览环境无法直接换取工作室 Nakama 凭证」**：`getNakamaSession()` 依赖 Orbit 桌面主进程的 LecSSO 登录态，请使用 Orbit「工坊 → 本地调试」加载你的本地开发服务器或构建目录联调。
+- **提示「尚未登录 Orbit」或 `401` 过期**：先确认 Orbit 主壳已登录工作室账号；若长时间挂机后 Token 过期，重新调用 `orbitSDK.multiplayer.getNakamaSession()` 换取新会话并重连 Socket 即可。
+- **不同游戏的玩家匹配到了一起**：在 `socket.addMatchmaker` 查询串中务必加上 `+properties.app:<你的 manifest id>` 做命名空间隔离（详见 [多人联机指南](/guide/multiplayer#命名空间隔离与最佳实践)）。

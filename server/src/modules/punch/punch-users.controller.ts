@@ -54,7 +54,12 @@ export class PunchUsersController {
   @PunchAdminOnly()
   async listMembers(@PunchCurrentUser() authUser: PunchAuthUser) {
     const members = await this.usersService.listTeamMembers(authUser.teamId);
-    return members.map((m) => toPunchUserResponse(m));
+    return {
+      items: members.map((m) => ({
+        ...toPunchUserResponse(m, m.id === authUser.userId ? authUser.role : m.role),
+        roleVerified: m.id === authUser.userId,
+      })),
+    };
   }
 
   @Patch('users/admin/members/:userId')

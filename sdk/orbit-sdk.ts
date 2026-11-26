@@ -75,6 +75,25 @@ export interface OrbitEconomyAPI {
   tip: (input: OrbitTipInput) => Promise<OrbitOrderTicket>;
 }
 
+export interface OrbitNakamaSession {
+  host: string;
+  port: string;
+  useSSL: boolean;
+  token: string;
+  refreshToken: string;
+  userId: string;
+  orbitUserId: string;
+  username: string;
+  displayName: string;
+  expiresAt: number;
+  created: boolean;
+}
+
+export interface OrbitMultiplayerAPI {
+  /** 获取绑定当前工作室成员身份的 Nakama 联机会话（免前端管理 Server Key）。 */
+  getNakamaSession: () => Promise<OrbitNakamaSession>;
+}
+
 export interface OrbitUserProfile {
   userId: string;
   username?: string;
@@ -124,6 +143,7 @@ export interface OrbitSDK {
     onResume: (listener: () => void) => () => void;
   };
   economy?: OrbitEconomyAPI;
+  multiplayer?: OrbitMultiplayerAPI;
 }
 
 declare global {
@@ -299,6 +319,11 @@ function createBrowserFallbackSDK(): OrbitSDK {
         settledAt: Date.now(),
         createdAt: Date.now(),
       }),
+    },
+    multiplayer: {
+      getNakamaSession: async () => {
+        throw new Error('浏览器独立预览环境无法直接换取工作室 Nakama 凭证，请在 Orbit 容器内运行');
+      },
     },
   };
 }

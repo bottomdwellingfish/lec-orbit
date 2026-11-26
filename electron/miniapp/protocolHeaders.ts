@@ -98,10 +98,18 @@ export function buildContainerSecurityHeaders(
   }
 
   if (options.isDocument) {
+    // 为声明的外域同时放行 https:// 与 wss://（便于 WebSocket / Nakama 联机直连）
     const allowedDomains = (manifest.permissions.networkDomains ?? [])
       .map((d) => d.trim())
       .filter((d) => /^[a-zA-Z0-9.*:-]+$/.test(d))
-      .map((d) => (d.startsWith('http://') || d.startsWith('https://') ? d : `https://${d}`));
+      .flatMap((d) =>
+        d.startsWith('http://') ||
+        d.startsWith('https://') ||
+        d.startsWith('ws://') ||
+        d.startsWith('wss://')
+          ? [d]
+          : [`https://${d}`, `wss://${d}`],
+      );
 
     const connectSrc = ["'self'", 'data:', 'blob:', ...allowedDomains].join(' ');
     // 游戏引擎（Unity/Godot/Cocos）依赖 wasm-unsafe-eval 与 blob: Worker

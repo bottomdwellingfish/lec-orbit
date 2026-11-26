@@ -85,6 +85,20 @@ export interface OrbitSdkOrderTicket {
   createdAt: number;
 }
 
+export interface OrbitSdkNakamaSession {
+  host: string;
+  port: string;
+  useSSL: boolean;
+  token: string;
+  refreshToken: string;
+  userId: string;
+  orbitUserId: string;
+  username: string;
+  displayName: string;
+  expiresAt: number;
+  created: boolean;
+}
+
 const orbitSDK = {
   sdkVersion: '1.1.0' as const,
   isOrbit: true as const,
@@ -158,6 +172,11 @@ const orbitSDK = {
     },
     tip: (input: OrbitSdkTipInput): Promise<OrbitSdkOrderTicket> =>
       ipcRenderer.invoke('orbit:sdk:economy:tip', input),
+  },
+
+  multiplayer: {
+    getNakamaSession: (): Promise<OrbitSdkNakamaSession> =>
+      ipcRenderer.invoke('orbit:sdk:multiplayer:getNakamaSession'),
   },
 };
 
