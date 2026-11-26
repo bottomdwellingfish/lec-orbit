@@ -47,6 +47,7 @@ import {
 } from '../modules/punch/entities/punch-collab.entities.js';
 import { InitialSchema1764000000000 } from './migrations/1764000000000-InitialSchema.js';
 import { AddPunchTables1764100000000 } from './migrations/1764100000000-AddPunchTables.js';
+import { AddMiniAppVersionIconUrl1764200000000 } from './migrations/1764200000000-AddMiniAppVersionIconUrl.js';
 
 export const ALL_ENTITIES = [
   OrbitMemberEntity,
@@ -87,7 +88,11 @@ export const ALL_ENTITIES = [
   PunchSkinUnlockEntity,
 ];
 
-export const ALL_MIGRATIONS = [InitialSchema1764000000000, AddPunchTables1764100000000];
+export const ALL_MIGRATIONS = [
+  InitialSchema1764000000000,
+  AddPunchTables1764100000000,
+  AddMiniAppVersionIconUrl1764200000000,
+];
 
 export function buildTypeOrmOptions(cfg: AppConfig): DataSourceOptions {
   if (!cfg.databaseUrl) {

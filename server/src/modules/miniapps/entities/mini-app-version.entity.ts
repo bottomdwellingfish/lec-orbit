@@ -35,6 +35,9 @@ export class MiniAppVersionEntity {
   @Column({ name: 'bundle_size', type: 'bigint', default: 0 })
   bundleSize: string;
 
+  @Column({ name: 'icon_url', type: 'text', nullable: true })
+  iconUrl: string | null;
+
   @Column({ name: 'manifest_json', type: 'jsonb', default: () => "'{}'::jsonb" })
   manifestJson: Record<string, unknown>;
 

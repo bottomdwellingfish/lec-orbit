@@ -1,4 +1,4 @@
-/** Orbit Go + Gin 后端接口与 WebSocket 实时推送客户端。 */
+/** Orbit 后端接口与 WebSocket 实时推送客户端。 */
 import axios, { AxiosError } from 'axios';
 import { getOrbitEndpoints } from '@shared/env';
 import type { MiniAppCatalogItem, MiniAppDetail, OrbitAppManifest } from '@shared/miniapp';
@@ -224,6 +224,7 @@ export const orbitServerApi = {
   async uploadMiniAppZip(input: {
     blob: Blob;
     fileName: string;
+    targetAppId?: string;
     channel: 'preview' | 'release';
     changelog: string;
     directPublish?: boolean;
@@ -232,6 +233,7 @@ export const orbitServerApi = {
     form.append('file', input.blob, input.fileName);
     form.append('channel', input.channel);
     form.append('changelog', input.changelog);
+    if (input.targetAppId) form.append('targetAppId', input.targetAppId);
     if (input.directPublish) {
       form.append('directPublish', 'true');
     }
@@ -243,6 +245,7 @@ export const orbitServerApi = {
   },
 
   async importGitHubMiniApp(input: {
+    targetAppId?: string;
     bundleUrl: string;
     bundleSha256: string;
     bundleSize?: number;
@@ -265,6 +268,18 @@ export const orbitServerApi = {
     await client.post(
       `/api/v1/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/review`,
       { decision, note: note ?? '' },
+    );
+  },
+
+  async withdrawMiniAppVersion(appId: string, versionId: string): Promise<void> {
+    await client.post(
+      `/api/v1/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/withdraw`,
+    );
+  },
+
+  async resubmitMiniAppVersion(appId: string, versionId: string): Promise<void> {
+    await client.post(
+      `/api/v1/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/resubmit`,
     );
   },
 

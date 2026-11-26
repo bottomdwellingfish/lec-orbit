@@ -37,6 +37,7 @@ const StatusUpdateSchema = z.object({
 });
 
 const ImportGitHubSchema = z.object({
+  targetAppId: z.string().optional(),
   bundleUrl: z.string().trim().min(1, '导入参数不完整'),
   bundleSha256: z.string().trim().min(1, '导入参数不完整'),
   bundleSize: z.number().int().min(0).optional(),
@@ -88,7 +89,7 @@ export class MiniAppsController {
   uploadBundle(
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: UploadedBinaryFile | undefined,
-    @Body() formBody: { channel?: string; changelog?: string; directPublish?: string },
+    @Body() formBody: { targetAppId?: string; channel?: string; changelog?: string; directPublish?: string },
   ) {
     if (!file?.buffer) {
       throw new BadRequestException('请上传构建包文件（字段名 file，格式 .zip/.lecapp）');
@@ -123,6 +124,26 @@ export class MiniAppsController {
       body.decision,
       body.note,
     );
+  }
+
+  @Post(':id/versions/:versionId/withdraw')
+  @HttpCode(HttpStatus.OK)
+  withdrawVersion(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.service.withdrawVersion(user, appId.trim(), UuidSchema.parse(versionId.trim()));
+  }
+
+  @Post(':id/versions/:versionId/resubmit')
+  @HttpCode(HttpStatus.CREATED)
+  resubmitVersion(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.service.resubmitVersion(user, appId.trim(), UuidSchema.parse(versionId.trim()));
   }
 
   @Post(':id/status')
