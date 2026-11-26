@@ -44,8 +44,19 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `permissions.scopes` | `Array<'user.profile' \| 'storage.cloud' \| 'clipboard' \| 'economy.read' \| 'economy.wager.coin' \| 'economy.wager.punch' \| 'economy.tip'>` | `["user.profile", "storage.cloud"]` | 声明需要调用的 `window.orbitSDK` 能力范围；未声明的敏感 API 会被主进程直接拒绝 |
-| `permissions.networkDomains` | `string[]` | `[]` | 允许通过 `fetch` / `WebSocket` 访问的外部域名白名单（最多 16 个），例如 `["api.github.com"]`。**若使用内置 Nakama 多人联机，请务必添加 `"orbit.lecspace.top"`** |
+| `permissions.scopes` | `Array<'user.profile' \| 'storage.cloud' \| 'clipboard' \| 'economy.read' \| 'economy.wager.coin' \| 'economy.wager.punch' \| 'economy.tip' \| 'cloud.functions' \| 'realtime.room'>` | `["user.profile", "storage.cloud"]` | 声明需要调用的 `window.orbitSDK` 能力范围；未声明的敏感 API 会被主进程直接拒绝 |
+| `permissions.networkDomains` | `string[]` | `[]` | 允许通过 `fetch` / `WebSocket` 及云函数 `ctx.fetch` 访问的外部域名白名单（最多 16 个），例如 `["api.deepseek.com"]`。**若使用内置 Nakama 多人联机，请务必添加 `"orbit.lecspace.top"`** |
+
+### `functions` 托管云函数声明（可选）
+
+若应用需要随包部署 Orbit FaaS 云函数，需添加 `functions` 配置块，且在 `permissions.scopes` 中声明 `"cloud.functions"`：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `functions.dir` | `string` | `'functions'` | 构建包内云函数目录相对路径，禁止 `/` 开头或包含 `..` |
+| `functions.routes` | `string[]` | **必填（1~16 项）** | 暴露的函数路由名列表，正则 `^[a-zA-Z0-9_-]{1,48}$`，每个路由须存在同名 `.ts` / `.js` / `.mjs` 文件 |
+| `functions.timeoutMs` | `number` | `5000`（流式默认 `30000`） | 单次执行超时毫秒数（普通上限 `10000`，开启流式上限 `60000`） |
+| `functions.allowStreaming` | `boolean` | `false` | 是否允许云函数返回 SSE 流式响应（如 AI 打字机） |
 
 ## 推荐配置模板
 

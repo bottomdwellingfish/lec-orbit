@@ -54,6 +54,42 @@ export interface OrbitNotificationItem {
   createdAt: string;
 }
 
+export interface MiniAppFunctionSourceFile {
+  path: string;
+  isBinary: boolean;
+  sizeBytes: number;
+  source: string | null;
+}
+
+export interface MiniAppVersionFunctionsSource {
+  appId: string;
+  versionId: string;
+  version?: string;
+  hasFunctions: boolean;
+  routes: string[];
+  timeoutMs?: number;
+  allowStreaming?: boolean;
+  sha256?: string;
+  files: MiniAppFunctionSourceFile[];
+}
+
+export interface MiniAppSecretSummary {
+  name: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface MiniAppFnLogEntry {
+  requestId: string;
+  fnName: string;
+  userId: string;
+  status: number;
+  durationMs: number;
+  logs: Array<{ level: string; text: string }>;
+  error?: string;
+  createdAt: string;
+}
+
 export interface OrbitWsEvent {
   type:
     | 'announcement.created'
@@ -61,7 +97,8 @@ export interface OrbitWsEvent {
     | 'announcement.deleted'
     | 'announcement.receipt'
     | 'notification.created'
-    | 'notification.updated';
+    | 'notification.updated'
+    | 'miniapp.realtime';
   payload: Record<string, unknown>;
 }
 
@@ -292,6 +329,46 @@ export const orbitServerApi = {
 
   async recordMiniAppPlay(appId: string): Promise<void> {
     await client.post(`/api/v1/apps/${encodeURIComponent(appId)}/play`).catch(() => undefined);
+  },
+
+  // ── 托管云函数 FaaS（源码审查 / 加密 Secrets / 调用日志）──
+
+  async getMiniAppFunctionsSource(
+    appId: string,
+    versionId: string,
+  ): Promise<MiniAppVersionFunctionsSource> {
+    const { data } = await client.get<MiniAppVersionFunctionsSource>(
+      `/api/v1/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/functions`,
+    );
+    return data;
+  },
+
+  async listMiniAppSecrets(appId: string): Promise<MiniAppSecretSummary[]> {
+    const { data } = await client.get<{ items: MiniAppSecretSummary[] }>(
+      `/api/v1/apps/${encodeURIComponent(appId)}/secrets`,
+    );
+    return data.items ?? [];
+  },
+
+  async upsertMiniAppSecret(appId: string, name: string, value: string): Promise<void> {
+    await client.put(
+      `/api/v1/apps/${encodeURIComponent(appId)}/secrets/${encodeURIComponent(name)}`,
+      { value },
+    );
+  },
+
+  async deleteMiniAppSecret(appId: string, name: string): Promise<void> {
+    await client.delete(
+      `/api/v1/apps/${encodeURIComponent(appId)}/secrets/${encodeURIComponent(name)}`,
+    );
+  },
+
+  async listMiniAppFnLogs(appId: string, limit = 50): Promise<MiniAppFnLogEntry[]> {
+    const { data } = await client.get<{ items: MiniAppFnLogEntry[] }>(
+      `/api/v1/apps/${encodeURIComponent(appId)}/fn-logs`,
+      { params: { limit } },
+    );
+    return data.items ?? [];
   },
 };
 

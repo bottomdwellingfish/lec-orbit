@@ -45,9 +45,15 @@ import {
   PunchTeamLedgerEntryEntity,
   PunchWeeklyReportRefEntity,
 } from '../modules/punch/entities/punch-collab.entities.js';
+import {
+  MiniAppFunctionBundleEntity,
+  MiniAppGlobalKvEntity,
+  MiniAppSecretEntity,
+} from '../modules/functions/entities/functions.entities.js';
 import { InitialSchema1764000000000 } from './migrations/1764000000000-InitialSchema.js';
 import { AddPunchTables1764100000000 } from './migrations/1764100000000-AddPunchTables.js';
 import { AddMiniAppVersionIconUrl1764200000000 } from './migrations/1764200000000-AddMiniAppVersionIconUrl.js';
+import { AddMiniAppFunctions1764300000000 } from './migrations/1764300000000-AddMiniAppFunctions.js';
 
 export const ALL_ENTITIES = [
   OrbitMemberEntity,
@@ -86,12 +92,17 @@ export const ALL_ENTITIES = [
   PunchTeamEventEntity,
   PunchTeamLedgerEntryEntity,
   PunchSkinUnlockEntity,
+  // Orbit 托管云函数 FaaS 3 张核心表
+  MiniAppFunctionBundleEntity,
+  MiniAppGlobalKvEntity,
+  MiniAppSecretEntity,
 ];
 
 export const ALL_MIGRATIONS = [
   InitialSchema1764000000000,
   AddPunchTables1764100000000,
   AddMiniAppVersionIconUrl1764200000000,
+  AddMiniAppFunctions1764300000000,
 ];
 
 export function buildTypeOrmOptions(cfg: AppConfig): DataSourceOptions {

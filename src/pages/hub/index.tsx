@@ -19,6 +19,7 @@ import {
   ArrowLeft,
   Bug,
   CheckCircle2,
+  Cloud,
   Code2,
   ExternalLink,
   FolderOpen,
@@ -50,6 +51,10 @@ import { getOrbitClient, isDesktopRuntime } from '@/services/orbitClient';
 import { orbitServerApi } from '@/services/orbitServerApi';
 import { notifyToast } from '@/services/orbitToast';
 import { useOrbitStore } from '@/stores/useOrbitStore';
+import {
+  MiniAppFunctionsDialog,
+  type MiniAppFunctionsDialogTarget,
+} from './MiniAppFunctionsDialog';
 import styles from './Hub.module.css';
 
 type HubFilterTab = 'all' | 'miniapp' | 'minigame' | 'mine' | 'pending';
@@ -274,11 +279,15 @@ export function HubPage(): JSX.Element {
   const [ghSha256, setGhSha256] = useState('');
   const [ghManifestText, setGhManifestText] = useState('');
 
+  // 托管云函数工作台弹窗（源码审查 / Secrets / 日志）
+  const [fnDialogTarget, setFnDialogTarget] = useState<MiniAppFunctionsDialogTarget | null>(null);
+
   useEffect(() => {
     void refreshHubData();
   }, [refreshHubData]);
 
-  const dialogOpen = devOpen || uploadOpen || workshopAction !== null;
+  const dialogOpen =
+    devOpen || uploadOpen || workshopAction !== null || fnDialogTarget !== null;
   useEffect(() => {
     if (!dialogOpen) return;
     pushOverlay();
@@ -810,6 +819,10 @@ export function HubPage(): JSX.Element {
             const canUploadNewVersion = !pendingVersion && (recoveryVersion || card.catalogItem?.status === 'suspended');
             const isReviewTab = auth.isAdmin && tab === 'pending';
             const launchVersion = card.catalogItem ? getCardVersion(card.catalogItem, tab) : undefined;
+            const hasCloudFunctions = Boolean(
+              launchVersion?.manifest?.functions ||
+                launchVersion?.manifest?.permissions?.scopes?.includes('cloud.functions'),
+            );
             const opensPendingBuild = pendingVersion && launchVersion?.id === pendingVersion.id;
             const canOpen = !auth.isAdmin || isReviewTab || isMyWork || !opensPendingBuild;
             const running = hubRuntime.apps.find((a) => a.appId === card.appId);
@@ -844,6 +857,11 @@ export function HubPage(): JSX.Element {
                       {card.crossOriginIsolated && (
                         <Tag tone="info" icon={<ShieldCheck size={10} />}>
                           SAB
+                        </Tag>
+                      )}
+                      {hasCloudFunctions && (
+                        <Tag tone="info" icon={<Cloud size={10} />}>
+                          云函数
                         </Tag>
                       )}
                       {pendingVersion && <Tag tone="warning">待审核</Tag>}
@@ -900,8 +918,26 @@ export function HubPage(): JSX.Element {
                   )}
                 </div>}
 
-                {canManageWork && (pendingVersion || isPublished || canUploadNewVersion) && (
+                {canManageWork && (
                   <div className={styles.reviewBar}>
+                    {launchVersion && (
+                      <Button
+                        variant="glass"
+                        size="small"
+                        icon={<Cloud size={13} />}
+                        onClick={() =>
+                          setFnDialogTarget({
+                            appId: card.appId,
+                            appName: card.name,
+                            versionId: launchVersion.id,
+                            versionLabel: launchVersion.version,
+                            initialTab: hasCloudFunctions ? 'source' : 'secrets',
+                          })
+                        }
+                      >
+                        云函数管理
+                      </Button>
+                    )}
                     {pendingVersion && (
                       <Button
                         variant="glass"
@@ -954,6 +990,24 @@ export function HubPage(): JSX.Element {
 
                 {isReviewTab && pendingVersion && (
                   <div className={styles.reviewBar}>
+                    {hasCloudFunctions && (
+                      <Button
+                        variant="glass"
+                        size="small"
+                        icon={<Cloud size={13} />}
+                        onClick={() =>
+                          setFnDialogTarget({
+                            appId: card.appId,
+                            appName: card.name,
+                            versionId: pendingVersion.id,
+                            versionLabel: pendingVersion.version,
+                            initialTab: 'source',
+                          })
+                        }
+                      >
+                        审云函数源码
+                      </Button>
+                    )}
                     <Button
                       variant="filled"
                       size="small"
@@ -1247,6 +1301,10 @@ export function HubPage(): JSX.Element {
           </div>
         </form>
       </Dialog>
+      <MiniAppFunctionsDialog
+        target={fnDialogTarget}
+        onClose={() => setFnDialogTarget(null)}
+      />
     </div>
   );
 }

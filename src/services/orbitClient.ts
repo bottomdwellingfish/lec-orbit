@@ -189,6 +189,7 @@ const browserFallback: OrbitBridge = {
     listAppPrefs: async () => [],
     onRuntimeChanged: () => () => undefined,
     onToastRequested: () => () => undefined,
+    dispatchRealtimeEvent: async () => undefined,
   },
 };
 

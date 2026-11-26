@@ -1,0 +1,278 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 360px;
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+  font-size: 12px;
+  color: var(--orbit-text-muted);
+}
+
+.metaStrong {
+  color: var(--orbit-text);
+  font-weight: 600;
+}
+
+.sourceSplit {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 290px;
+  max-height: 400px;
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+  overflow-y: auto;
+}
+
+.fileBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--orbit-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.fileBtn:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.fileBtnActive {
+  background: rgba(10, 132, 255, 0.13);
+  border-color: rgba(10, 132, 255, 0.35);
+  color: #0a84ff;
+  font-weight: 600;
+}
+
+.filePath {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.fileSize {
+  font-size: 11px;
+  color: var(--orbit-text-muted);
+}
+
+.codePane {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface-strong);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.codeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--orbit-border);
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--orbit-text-muted);
+}
+
+.codePre {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--orbit-text);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.binaryNotice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 24px;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--orbit-text-muted);
+  text-align: center;
+}
+
+.secretForm {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.secretList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.secretItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+}
+
+.secretInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.secretName {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--orbit-text);
+}
+
+.secretMeta {
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+}
+
+.logList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.logItem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+}
+
+.logHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.logLeft {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.logFn {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--orbit-text);
+}
+
+.logMeta {
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+}
+
+.logError {
+  margin: 0;
+  font-size: 12px;
+  color: #ef4444;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+}
+
+.consoleBox {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.consoleLine {
+  color: var(--orbit-text);
+  word-break: break-word;
+}
+
+.consoleWarn {
+  color: #f59e0b;
+}
+
+.consoleError {
+  color: #ef4444;
+}
+
+.loadingText {
+  padding: 32px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--orbit-text-muted);
+}
+
+@media (max-width: 680px) {
+  .sourceSplit {
+    grid-template-columns: 1fr;
+  }
+  .secretForm {
+    grid-template-columns: 1fr;
+  }
+}

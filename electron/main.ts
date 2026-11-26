@@ -483,6 +483,19 @@ function registerIpcHandlers(): void {
     miniAppContainerManager.setWorkspaceBounds(bounds);
   });
 
+  ipcMain.handle('orbit:hub:dispatchRealtime', (_e, raw) => {
+    const payload = z
+      .object({
+        appId: MiniAppIdSchema,
+        roomId: z.string().nullable().optional(),
+        event: z.string().min(1).max(128),
+        payload: z.unknown().optional(),
+        ts: z.number().optional(),
+      })
+      .parse(raw);
+    miniAppContainerManager.dispatchRealtimeEvent(payload);
+  });
+
   ipcMain.handle('orbit:hub:uninstall', (_e, rawAppId) => {
     const appId = MiniAppIdSchema.parse(rawAppId);
     miniAppContainerManager.close(appId);

@@ -60,6 +60,7 @@ export default defineConfig({
         items: [
           { text: 'window.orbitSDK API 参考', link: '/api/orbit-sdk' },
           { text: '多人联机（Nakama BaaS）', link: '/guide/multiplayer' },
+          { text: '托管云函数（Orbit FaaS）', link: '/guide/cloud-functions' },
         ],
       },
       {

@@ -2,6 +2,33 @@
 
 Orbit 工坊是乐程软件工作室（LEC）内置在 Orbit 桌面工作台中的**内部小程序与小游戏运行容器**。只要你的项目能导出为标准 Web 静态产物（HTML + JS + CSS + WASM/WebGL），无需任何原生 C++ 交叉编译，即可在 macOS（Apple Silicon / Intel）和 Windows 的 Orbit 中一键运行。
 
+## 开发者全景开发路径（从零到上线）
+
+在 Orbit 工坊里，你**无需购买服务器、无需写 Dockerfile、无需配域名**。先花 30 秒选定后端路线，再按下方 4 步走完即可：
+
+| 你的作品类型 | 推荐路线 | 是否需要写服务端代码 |
+| --- | --- | --- |
+| 效率小程序、单机小游戏、个人存档 | 直接使用 `orbitSDK.storage` 个人云存档 | **不需要** |
+| 狼人杀发暗牌、回合制棋牌、全服排行榜、AI 助手（藏 Key + 流式输出） | **托管云函数（Orbit FaaS）** — 详见 [托管云函数指南](/guide/cloud-functions) | **只需在项目内新建 `functions/` 目录写函数，随 ZIP 自动部署** |
+| 60 FPS 动作/射击实时联机、带乐币/打卡时长对赌的联机对局 | **Nakama 多人联机 BaaS + 预装通用赌约房** — 详见 [多人联机指南](/guide/multiplayer) | **不需要**（直接调用平台预装的 `orbit_wager_create_room` 插件与 `orbitSDK.multiplayer`） |
+| 既要高频实时同步，又要隐藏 Key 调 AI 或跑复杂结算 | **云函数 + Nakama 混合使用** | 实时帧走 Nakama，敏感/结算逻辑放 `functions/` |
+
+### 标准 4 步研发闭环
+
+```text
+① 建工程：放好 orbit.manifest.json + 前端代码（以及可选的 functions/ 目录）
+     │
+② 本地热调试：Orbit「工坊 → 本地调试」加载本地目录或 Localhost Dev Server
+   （如有云函数，终端顺手跑 `bun run fn:dev -- <你的项目目录>` 即可本地热重载联调）
+     │
+③ 打包上传：将构建产物 + orbit.manifest.json（+ functions/）打成 ZIP，在「工坊 → 上传/导入」提交
+   （作者可在「我的作品 → 云函数管理」里配加密 Secrets 与看实时调用日志）
+     │
+④ 审核即上线：队长在「待审核」试玩并一键审阅云函数源码 → 点击批准 → 全员立即可玩，云函数自动生效
+```
+
+---
+
 ## 前置准备
 
 1. 安装并登录最新版 **Orbit 桌面客户端**（仅限 `lec-studio` 组织正式成员）。

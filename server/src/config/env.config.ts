@@ -89,6 +89,9 @@ const RawEnvSchema = z.object({
   NAKAMA_SERVER_KEY: envStr(''),
   NAKAMA_HTTP_KEY: envStr(''),
 
+  // Orbit 托管云函数 FaaS（内网 supabase/edge-runtime 集群服务地址）
+  EDGE_RUNTIME_URL: envStr(''),
+
   // Economy（coin 乐币与 punch_minutes 打卡时长交易底层配置）
   ECONOMY_CREDENTIAL_MASTER_KEY: envStr(''),
   ECONOMY_PUNCH_AFFECTS_ASSESSMENT: envBool(true),
@@ -160,6 +163,8 @@ export interface AppConfig {
     serverKey: string;
     httpKey: string;
   };
+
+  edgeRuntimeUrl: string;
 
   economy: {
     credentialMasterKey: string;
@@ -238,6 +243,8 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       serverKey: parsed.NAKAMA_SERVER_KEY,
       httpKey: parsed.NAKAMA_HTTP_KEY,
     },
+
+    edgeRuntimeUrl: parsed.EDGE_RUNTIME_URL.replace(/\/+$/, ''),
 
     economy: {
       credentialMasterKey: parsed.ECONOMY_CREDENTIAL_MASTER_KEY || parsed.ORBIT_INTERNAL_TOKEN,

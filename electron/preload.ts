@@ -216,6 +216,7 @@ const bridge: OrbitBridge = {
       ipcRenderer.on('orbit:hub:toastRequested', wrapped);
       return () => ipcRenderer.removeListener('orbit:hub:toastRequested', wrapped);
     },
+    dispatchRealtimeEvent: (payload) => ipcRenderer.invoke('orbit:hub:dispatchRealtime', payload),
   },
 };
 

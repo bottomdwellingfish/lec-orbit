@@ -99,8 +99,19 @@ export interface OrbitSdkNakamaSession {
   created: boolean;
 }
 
+export interface OrbitSdkRealtimeMessage {
+  roomId: string | null;
+  event: string;
+  payload: unknown;
+  ts: number;
+}
+
+export interface OrbitSdkCloudCallOptions {
+  previewVersionId?: string;
+}
+
 const orbitSDK = {
-  sdkVersion: '1.1.0' as const,
+  sdkVersion: '1.2.0' as const,
   isOrbit: true as const,
 
   env: {
@@ -177,6 +188,60 @@ const orbitSDK = {
   multiplayer: {
     getNakamaSession: (): Promise<OrbitSdkNakamaSession> =>
       ipcRenderer.invoke('orbit:sdk:multiplayer:getNakamaSession'),
+  },
+
+  cloud: {
+    call: <T = unknown>(
+      fnName: string,
+      payload?: unknown,
+      options?: OrbitSdkCloudCallOptions,
+    ): Promise<T> =>
+      ipcRenderer.invoke('orbit:sdk:cloud:call', {
+        fnName,
+        payload,
+        previewVersionId: options?.previewVersionId,
+      }),
+    stream: async <T = unknown>(
+      fnName: string,
+      payload: unknown,
+      onChunk: (chunk: T) => void,
+      options?: OrbitSdkCloudCallOptions,
+    ): Promise<void> => {
+      const streamId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        msg: { streamId?: string; chunk?: T; done?: boolean },
+      ) => {
+        if (msg?.streamId !== streamId) return;
+        if (!msg.done && msg.chunk !== undefined) {
+          onChunk(msg.chunk);
+        }
+      };
+      ipcRenderer.on('orbit:sdk:event:cloudStreamChunk', handler);
+      try {
+        await ipcRenderer.invoke('orbit:sdk:cloud:stream', {
+          streamId,
+          fnName,
+          payload,
+          previewVersionId: options?.previewVersionId,
+        });
+      } finally {
+        ipcRenderer.removeListener('orbit:sdk:event:cloudStreamChunk', handler);
+      }
+    },
+  },
+
+  realtime: {
+    joinRoom: (roomId: string): Promise<{ ok: boolean; appId: string; roomId: string }> =>
+      ipcRenderer.invoke('orbit:sdk:realtime:joinRoom', roomId),
+    leaveRoom: (roomId: string): Promise<{ ok: boolean; appId: string; roomId: string }> =>
+      ipcRenderer.invoke('orbit:sdk:realtime:leaveRoom', roomId),
+    onMessage: (listener: (msg: OrbitSdkRealtimeMessage) => void): (() => void) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, msg: OrbitSdkRealtimeMessage) =>
+        listener(msg);
+      ipcRenderer.on('orbit:sdk:event:realtime', wrapped);
+      return () => ipcRenderer.removeListener('orbit:sdk:event:realtime', wrapped);
+    },
   },
 };
 

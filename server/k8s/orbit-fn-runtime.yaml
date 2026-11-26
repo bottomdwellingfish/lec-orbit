@@ -1,0 +1,164 @@
+# Orbit 托管云函数运行时（方案 E — supabase/edge-runtime:v1.67.4）
+# 说明：
+# - 主路由 ConfigMap（orbit-fn-main）由部署脚本直接从 server/edge-runtime/main/{index.ts,_orbit_ctx.ts} 生成；
+# - 无需 ReadWriteMany PVC：Pod 挂载独立 emptyDir（/tmp/orbit-fn），按需向 lec-orbit-server 拉取并校验过审函数包；
+# - 配合 NetworkPolicy/orbit-fn-runtime-isolation，从内核层封死对 PostgreSQL、Redis、Nakama、内网宿主机与元数据地址的任何直连。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orbit-fn-runtime
+  namespace: lec-orbit-production
+  labels:
+    app: orbit-fn-runtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orbit-fn-runtime
+  template:
+    metadata:
+      labels:
+        app: orbit-fn-runtime
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: edge-runtime
+          image: 192.168.57.10:30500/lec-org/edge-runtime:v1.67.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - start
+            - --ip
+            - 0.0.0.0
+            - --port
+            - '9000'
+            - --main-service
+            - /home/deno/main
+            - --policy
+            - per_worker
+            - --max-parallelism
+            - '16'
+            - --request-wait-timeout
+            - '5000'
+            - --graceful-exit-timeout
+            - '10'
+          ports:
+            - name: http
+              containerPort: 9000
+          env:
+            - name: ORBIT_INTERNAL_URL
+              value: http://lec-orbit-server.lec-orbit-production.svc.cluster.local:8080
+            - name: ORBIT_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: app-env
+                  key: ORBIT_INTERNAL_TOKEN
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /_internal/health
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_internal/health
+              port: 9000
+            initialDelaySeconds: 8
+            periodSeconds: 20
+          volumeMounts:
+            - name: main-router
+              mountPath: /home/deno/main
+              readOnly: true
+            - name: fn-cache
+              mountPath: /var/lib/orbit-fn
+      volumes:
+        - name: main-router
+          configMap:
+            name: orbit-fn-main
+        - name: fn-cache
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbit-fn-runtime
+  namespace: lec-orbit-production
+  labels:
+    app: orbit-fn-runtime
+spec:
+  type: ClusterIP
+  selector:
+    app: orbit-fn-runtime
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orbit-fn-runtime-isolation
+  namespace: lec-orbit-production
+spec:
+  podSelector:
+    matchLabels:
+      app: orbit-fn-runtime
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 仅允许同命名空间内的 lec-orbit-server 调用 9000 端口
+    - from:
+        - podSelector:
+            matchLabels:
+              app: lec-orbit-server
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    # 1. 允许 CoreDNS 域名解析
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. 允许访问 lec-orbit-server 内网桥接接口（8080）
+    - to:
+        - podSelector:
+            matchLabels:
+              app: lec-orbit-server
+      ports:
+        - protocol: TCP
+          port: 8080
+    # 3. 仅放行公网 HTTPS（443），内核级拦截全部 RFC1918 内网与云元数据地址（PG/Redis/Nakama/宿主机全封死）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443

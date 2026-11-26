@@ -21,6 +21,8 @@ export const MiniAppPermissionScopeSchema = z.enum([
   'economy.wager.coin',
   'economy.wager.punch',
   'economy.tip',
+  'cloud.functions',
+  'realtime.room',
 ]);
 export type MiniAppPermissionScope = z.infer<typeof MiniAppPermissionScopeSchema>;
 
@@ -117,6 +119,28 @@ export const MiniAppPermissionsSchema = z
     networkDomains: [],
   });
 
+export const MiniAppFunctionsConfigSchema = z.object({
+  dir: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine((v) => !v.startsWith('/') && !v.includes('..'), '云函数目录不能包含绝对路径或 ..')
+    .default('functions'),
+  timeoutMs: z.number().int().min(1000).max(60000).default(5000),
+  allowStreaming: z.boolean().default(false),
+  routes: z
+    .array(
+      z
+        .string()
+        .trim()
+        .regex(/^[a-zA-Z0-9_-]{1,48}$/, '云函数路由名仅允许字母、数字、下划线与短横线'),
+    )
+    .min(1)
+    .max(16),
+});
+export type MiniAppFunctionsConfig = z.infer<typeof MiniAppFunctionsConfigSchema>;
+
 export const OrbitAppManifestSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   id: MiniAppIdSchema,
@@ -145,6 +169,7 @@ export const OrbitAppManifestSchema = z.object({
   window: MiniAppWindowConfigSchema,
   runtime: MiniAppRuntimeConfigSchema,
   permissions: MiniAppPermissionsSchema,
+  functions: MiniAppFunctionsConfigSchema.optional(),
 });
 export type OrbitAppManifest = z.infer<typeof OrbitAppManifestSchema>;
 
