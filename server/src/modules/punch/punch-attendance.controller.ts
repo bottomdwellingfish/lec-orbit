@@ -41,8 +41,12 @@ export class PunchAttendanceController {
   ) {}
 
   @Get('current')
-  getCurrent(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.attendanceService.getCurrentSession(user.userId);
+  async getCurrent(@PunchCurrentUser() user: PunchAuthUser) {
+    const session = await this.attendanceService.getCurrentSession(user.userId);
+    return {
+      hasActiveSession: Boolean(session),
+      session: session ?? null,
+    };
   }
 
   @Get('team-active')

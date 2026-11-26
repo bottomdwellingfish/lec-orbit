@@ -84,6 +84,30 @@ const PITY_R = 10;
 const PITY_SR = 25;
 const PITY_SSR = 70;
 
+const ASSESSMENT_TARGET_CARD_IDS = new Set(['r-charity', 'sr-angel', 'ssr-harvest']);
+
+function toPublicCardId(internalId: string): string {
+  const idx = CARD_CATALOG.findIndex((c) => c.id === internalId);
+  return idx >= 0 ? `card-${String(idx + 1).padStart(2, '0')}` : internalId;
+}
+
+function resolveInternalCardId(rawId?: string): string | undefined {
+  if (!rawId) return undefined;
+  const trimmed = rawId.trim();
+  const matched = CARD_CATALOG.find(
+    (card, idx) => `card-${String(idx + 1).padStart(2, '0')}` === trimmed || card.id === trimmed,
+  );
+  return matched?.id;
+}
+
+function getCardTargetMode(id: string): 'none' | 'self-or-other' | 'other' | 'two' | 'recipient' {
+  if (id === 'r-add') return 'self-or-other';
+  if (id === 'sr-chain') return 'two';
+  if (id === 'r-thief') return 'recipient';
+  if (['r-steal', 'r-skip', 'sr-famine', 'sr-redking', 'ssr-arrows'].includes(id)) return 'other';
+  return 'none';
+}
+
 interface MemberCardState {
   inventory: Record<string, number>;
   discovered: string[];
@@ -106,6 +130,8 @@ const CardActionSchema = z.object({
   action: z.enum(['draw', 'gift', 'use']),
   count: z.union([z.literal(1), z.literal(10)]).optional(),
   cardId: z.string().optional(),
+  targetId: z.string().optional(),
+  secondTargetId: z.string().optional(),
   targetMemberKey: z.string().optional(),
   requestKey: z.string().trim().min(1).max(128).optional(),
 });
@@ -199,9 +225,10 @@ export class PunchCardsService {
 
   async getMe(user: PunchAuthUser) {
     const weekKey = getShanghaiWeekKey(new Date());
-    const [game, wallet] = await Promise.all([
+    const [game, wallet, activeMembers] = await Promise.all([
       this.gameRepo.findOne({ where: { teamId: user.teamId } }),
       this.economyLedger.getWalletSummary(user.ssoSub || user.userId),
+      this.userRepo.find({ where: { teamId: user.teamId, status: 'active' } }),
     ]);
 
     const state = (game?.state ?? {}) as { members?: Record<string, MemberCardState> };
@@ -214,34 +241,81 @@ export class PunchCardsService {
       spentCoins: 0,
     };
 
-    const inventory = CARD_CATALOG.filter((c) => (m?.inventory?.[c.id] ?? 0) > 0).map((c) => ({
-      ...c,
-      quantity: m!.inventory[c.id],
-    }));
+    const discoveredSet = new Set(m?.discovered ?? []);
+    const pitySR = m?.pitySR ?? 0;
+    const pitySSR = m?.pitySSR ?? 0;
+    const freeRemaining = Math.max(0, WEEKLY_FREE_DRAWS - (w.freeUsed ?? 0));
+    const giftDraws = w.bonusDraws ?? 0;
+
+    const collection = CARD_CATALOG.map((card) => {
+      const unlocked = discoveredSet.has(card.id);
+      return {
+        id: toPublicCardId(card.id),
+        rarity: card.rarity,
+        unlocked,
+        quantity: m?.inventory?.[card.id] ?? 0,
+        ...(unlocked
+          ? {
+              name: card.name,
+              type: card.type,
+              stat: card.stat,
+              summary: card.summary,
+              effect: card.effect,
+              detail: card.detail,
+              targetMode: getCardTargetMode(card.id),
+              targetScope: ASSESSMENT_TARGET_CARD_IDS.has(card.id)
+                ? ('assessment' as const)
+                : ('same-grade' as const),
+              usable: !['n-shield', 'r-blade', 'sr-reflect'].includes(card.id),
+            }
+          : {}),
+      };
+    });
+
+    const enrollYears = [...new Set(activeMembers.map((u) => u.enrollYear).filter((y): y is number => typeof y === 'number'))].sort((a, b) => b - a);
+    const requiredEnrollYears = enrollYears.slice(0, 2);
 
     return {
+      capacityLimited: false,
       week: weekKey,
-      entertainmentSeconds: w.entertainmentSeconds,
-      freeDrawsRemaining: Math.max(0, WEEKLY_FREE_DRAWS - (w.freeUsed ?? 0)),
-      bonusDrawsRemaining: w.bonusDraws ?? 0,
+      entertainmentSeconds: w.entertainmentSeconds ?? 0,
+      // 兼容旧前端字段名（freeRemaining / giftDraws / points / collection / players / statuses / events）
+      points: wallet.coinBalance,
+      freeRemaining,
+      giftDraws,
+      freeDrawsRemaining: freeRemaining,
+      bonusDrawsRemaining: giftDraws,
       weeklyPaidDrawsUsed: w.paidDrawsUsed ?? 0,
       weeklyPaidDrawsLimit: WEEKLY_MAX_PAID_DRAWS,
       coinCostPerDraw: COIN_COST_PER_DRAW,
-      // 向下兼容旧版前端 points 卡片显示，同时底层已统一为 coin 乐币余额
-      points: {
-        rule: 'unified-coin-v2',
-        balance: wallet.coinBalance,
-        spent: w.spentCoins ?? 0,
-      },
       pity: {
+        sinceSR: pitySR,
+        sinceSSR: pitySSR,
+        srRemaining: Math.max(1, PITY_SR - pitySR),
+        ssrRemaining: Math.max(1, PITY_SSR - pitySSR),
         r: m?.pityR ?? 0,
-        sr: m?.pitySR ?? 0,
-        ssr: m?.pitySSR ?? 0,
+        sr: pitySR,
+        ssr: pitySSR,
         limits: { r: PITY_R, sr: PITY_SR, ssr: PITY_SSR },
       },
-      discoveredIds: m?.discovered ?? [],
-      inventory,
-      catalog: CARD_CATALOG,
+      collection,
+      players: activeMembers.map((member) => ({
+        id: member.id,
+        username: member.username,
+        displayName: member.displayName,
+        enrollYear: member.enrollYear,
+      })),
+      requiredEnrollYears,
+      statuses: {
+        acceleration: false,
+        immuneUntil: null,
+        lockedUntil: null,
+        starvedUntil: null,
+      },
+      events: [],
+      incomingGifts: [],
+      incomingDefenses: [],
+      incomingInteractions: [],
     };
   }
 
@@ -345,14 +419,16 @@ export class PunchCardsService {
           count,
           paidDraws: needPaid,
           spentCoins: needPaid * COIN_COST_PER_DRAW,
-          gainedCardIds: drawn.map((c) => c.id),
-          cards: drawn,
+          gainedCardIds: drawn.map((c) => toPublicCardId(c.id)),
+          cards: drawn.map((c) => ({ ...c, id: toPublicCardId(c.id) })),
         };
       } else if (input.action === 'gift') {
-        if (!input.cardId || !input.targetMemberKey) {
-          throw new BadRequestException('赠送卡牌需要指定 cardId 和 targetMemberKey');
+        const internalCardId = resolveInternalCardId(input.cardId);
+        const rawTarget = input.targetId?.trim() || input.targetMemberKey?.trim();
+        if (!internalCardId || !rawTarget) {
+          throw new BadRequestException('赠送卡牌需要指定 cardId 和目标成员');
         }
-        const targetUid = this.usersService.resolveMemberKey(input.targetMemberKey);
+        const targetUid = this.usersService.resolveMemberKey(rawTarget) ?? rawTarget;
         if (!targetUid || targetUid === user.userId) {
           throw new BadRequestException('无效的受赠成员');
         }
@@ -361,32 +437,33 @@ export class PunchCardsService {
         });
         if (!targetUser) throw new ForbiddenException('只能赠送给同团队成员');
 
-        const owned = actor.inventory[input.cardId] ?? 0;
+        const owned = actor.inventory[internalCardId] ?? 0;
         if (owned < 1) throw new BadRequestException('背包中该卡牌数量不足');
 
         const receiver = this.ensureMemberState(state, targetUid, weekKey);
-        actor.inventory[input.cardId] = owned - 1;
-        receiver.inventory[input.cardId] = (receiver.inventory[input.cardId] ?? 0) + 1;
-        if (!receiver.discovered.includes(input.cardId)) {
-          receiver.discovered.push(input.cardId);
+        actor.inventory[internalCardId] = owned - 1;
+        receiver.inventory[internalCardId] = (receiver.inventory[internalCardId] ?? 0) + 1;
+        if (!receiver.discovered.includes(internalCardId)) {
+          receiver.discovered.push(internalCardId);
         }
 
         actionResult = {
           action: 'gift',
-          cardId: input.cardId,
-          targetMemberKey: input.targetMemberKey,
+          cardId: toPublicCardId(internalCardId),
+          targetId: targetUid,
         };
       } else {
-        if (!input.cardId) throw new BadRequestException('缺少 cardId');
-        const owned = actor.inventory[input.cardId] ?? 0;
+        const internalCardId = resolveInternalCardId(input.cardId);
+        if (!internalCardId) throw new BadRequestException('缺少或无效的 cardId');
+        const owned = actor.inventory[internalCardId] ?? 0;
         if (owned < 1) throw new BadRequestException('背包中该卡牌数量不足');
-        actor.inventory[input.cardId] = owned - 1;
-        if (input.cardId === 'r-add') {
+        actor.inventory[internalCardId] = owned - 1;
+        if (internalCardId === 'r-add') {
           week.entertainmentSeconds += 1800;
         }
         actionResult = {
           action: 'use',
-          cardId: input.cardId,
+          cardId: toPublicCardId(internalCardId),
           appliedAt: now.toISOString(),
         };
       }
@@ -419,11 +496,17 @@ export class PunchCardsService {
     });
   }
 
+  async performActionWithView(user: PunchAuthUser, input: z.infer<typeof CardActionSchema>) {
+    const result = await this.performAction(user, input);
+    return { result, state: await this.getMe(user) };
+  }
+
   async getActionStatus(user: PunchAuthUser, requestKey: string) {
     const rec = await this.receiptRepo.findOne({
       where: { teamId: user.teamId, receiptKey: `${user.userId}:${requestKey}` },
     });
-    return rec ? { found: true, result: rec.result, at: rec.at } : { found: false };
+    if (!rec) throw new NotFoundException('该操作尚未确认，请使用原操作编号重试');
+    return { result: rec.result, state: await this.getMe(user) };
   }
 
   /**
@@ -488,7 +571,7 @@ export class PunchCardsController {
   @Post('cards/actions')
   @HttpCode(HttpStatus.OK)
   performAction(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
-    return this.cardsService.performAction(user, CardActionSchema.parse(rawBody));
+    return this.cardsService.performActionWithView(user, CardActionSchema.parse(rawBody));
   }
 
   @Get('cards/actions/:requestKey')
