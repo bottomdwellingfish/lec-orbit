@@ -3,10 +3,12 @@
  * 完整承接 LecPunch 的团队活动 (/team-events/*)、财务账本 (/team-ledger/*)、
  * 反馈举报 (/reports*)、站内通知 (/notifications/*) 与局域网会议 (/meet/token)。
  */
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Get,
   Header,
@@ -16,18 +18,26 @@ import {
   Patch,
   Post,
   Query,
+  Req,
+  Res,
+  UnsupportedMediaTypeException,
+  UploadedFiles,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-node';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { z } from 'zod';
 import { APP_CONFIG, type AppConfig } from '../../config/env.config.js';
+import { S3StorageService } from '../storage/s3-storage.service.js';
 import {
   PunchNotificationEntity,
   PunchNotificationReceiptEntity,
   PunchReportEntity,
   PunchTeamEventEntity,
   PunchTeamLedgerEntryEntity,
+  type PunchReportImageMeta,
 } from './entities/punch-collab.entities.js';
 import { PunchUserEntity } from './entities/punch-core.entities.js';
 import {
@@ -73,11 +83,67 @@ const AdminNoticeSchema = z.object({
   title: z.string().trim().min(1).max(120),
   message: z.string().trim().min(1).max(2000),
   audience: z.enum(['team_members', 'team_admin']).default('team_members'),
+  requestKey: z.string().max(128).optional(),
 });
+
+const ALLOWED_REPORT_IMAGE_TYPES = new Map<string, string>([
+  ['image/jpeg', '.jpg'],
+  ['image/png', '.png'],
+  ['image/webp', '.webp'],
+]);
+
+const REPORT_IMAGE_FILENAME_RE = /^[0-9a-f-]{36}\.(jpg|png|webp)$/;
+
+interface UploadedBinaryFile {
+  buffer?: Buffer;
+  mimetype?: string;
+  size?: number;
+}
+
+interface SseSubscriber {
+  user: PunchAuthUser;
+  send: (event: string, data: unknown) => void;
+}
+
+/** 校验上传图片的文件头魔数，防止伪造 MIME 类型上传非图片内容。 */
+function matchesImageMagic(buf: Buffer, mime: string): boolean {
+  if (buf.length < 12) return false;
+  if (mime === 'image/jpeg') {
+    return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  }
+  if (mime === 'image/png') {
+    return (
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47 &&
+      buf[4] === 0x0d &&
+      buf[5] === 0x0a &&
+      buf[6] === 0x1a &&
+      buf[7] === 0x0a
+    );
+  }
+  if (mime === 'image/webp') {
+    return buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  return false;
+}
+
+/** 按东八区提取账本聚合桶键（YYYY-MM-DD 或 YYYY-MM）。 */
+function formatShanghaiBucket(date: Date, granularity: 'day' | 'month'): string {
+  const shifted = new Date(date.getTime() + 8 * 3600 * 1000);
+  const yyyy = shifted.getUTCFullYear();
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  if (granularity === 'month') return `${yyyy}-${mm}`;
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 @Controller()
 @UseGuards(PunchAuthGuard)
 export class PunchTeamOpsController {
+  private readonly sseSubscribers = new Set<SseSubscriber>();
+
   constructor(
     @InjectRepository(PunchTeamEventEntity)
     private readonly eventRepo: Repository<PunchTeamEventEntity>,
@@ -91,8 +157,23 @@ export class PunchTeamOpsController {
     private readonly receiptRepo: Repository<PunchNotificationReceiptEntity>,
     @InjectRepository(PunchUserEntity)
     private readonly userRepo: Repository<PunchUserEntity>,
+    private readonly s3Storage: S3StorageService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
+
+  /** 向在线的 SSE 客户端广播通知变更事件（不携带敏感正文，由前端重新拉取鉴权接口）。 */
+  private broadcastNotificationChange(teamId: string, opts?: { userId?: string; adminOnly?: boolean }): void {
+    for (const sub of this.sseSubscribers) {
+      if (sub.user.teamId !== teamId) continue;
+      if (opts?.userId && sub.user.userId !== opts.userId) continue;
+      if (opts?.adminOnly && sub.user.role !== 'admin') continue;
+      try {
+        sub.send('notifications.changed', {});
+      } catch {
+        this.sseSubscribers.delete(sub);
+      }
+    }
+  }
 
   // ── 团队活动 (/team-events/*) ──
 
@@ -273,6 +354,64 @@ export class PunchTeamOpsController {
     };
   }
 
+  @Get('team-ledger/admin/trend')
+  @PunchAdminOnly()
+  async ledgerTrend(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Query('granularity') rawGranularity?: string,
+    @Query('from') rawFrom?: string,
+    @Query('to') rawTo?: string,
+    @Query('type') rawType?: string,
+    @Query('category') rawCategory?: string,
+  ) {
+    const granularity: 'day' | 'month' = rawGranularity === 'day' ? 'day' : 'month';
+    const qb = this.ledgerRepo
+      .createQueryBuilder('e')
+      .where('e.team_id = :teamId', { teamId: user.teamId })
+      .andWhere('e.status = :status', { status: 'active' });
+
+    if (rawType === 'income' || rawType === 'expense') {
+      qb.andWhere('e.type = :type', { type: rawType });
+    }
+    if (rawCategory?.trim()) {
+      qb.andWhere('e.category = :category', { category: rawCategory.trim() });
+    }
+    if (rawFrom) {
+      const fromDate = new Date(rawFrom);
+      if (!Number.isNaN(fromDate.getTime())) qb.andWhere('e.occurred_at >= :from', { from: fromDate });
+    }
+    if (rawTo) {
+      const toDate = new Date(rawTo);
+      if (!Number.isNaN(toDate.getTime())) qb.andWhere('e.occurred_at <= :to', { to: toDate });
+    }
+
+    const rows = await qb.orderBy('e.occurred_at', 'ASC').getMany();
+    const buckets = new Map<
+      string,
+      { bucketKey: string; incomeCents: number; expenseCents: number; netCents: number; entryCount: number }
+    >();
+
+    for (const r of rows) {
+      const key = formatShanghaiBucket(r.occurredAt, granularity);
+      const bucket = buckets.get(key) ?? {
+        bucketKey: key,
+        incomeCents: 0,
+        expenseCents: 0,
+        netCents: 0,
+        entryCount: 0,
+      };
+      if (r.type === 'income') bucket.incomeCents += r.amountCents;
+      else bucket.expenseCents += r.amountCents;
+      bucket.netCents = bucket.incomeCents - bucket.expenseCents;
+      bucket.entryCount += 1;
+      buckets.set(key, bucket);
+    }
+
+    return {
+      items: [...buckets.values()].sort((a, b) => a.bucketKey.localeCompare(b.bucketKey)),
+    };
+  }
+
   @Get('team-ledger/admin/export')
   @PunchAdminOnly()
   @Header('Content-Type', 'text/csv; charset=utf-8')
@@ -302,9 +441,79 @@ export class PunchTeamOpsController {
   // ── 举报反馈 (/reports*) ──
 
   @Post('reports')
-  async createReport(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
+  @UseInterceptors(
+    FilesInterceptor('images', 3, {
+      limits: { fileSize: 3 * 1024 * 1024, files: 3 },
+    }),
+  )
+  async createReport(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Body() rawBody: unknown,
+    @UploadedFiles() rawFiles: UploadedBinaryFile[] = [],
+  ) {
     const input = CreateReportSchema.parse(rawBody);
+    const files = Array.isArray(rawFiles) ? rawFiles.filter((f) => f?.buffer && f.buffer.length > 0) : [];
+    if (files.length > 3) {
+      throw new UnsupportedMediaTypeException('最多上传 3 张图片');
+    }
+
+    for (const f of files) {
+      const mime = f.mimetype ?? '';
+      if (!ALLOWED_REPORT_IMAGE_TYPES.has(mime) || !f.buffer || !matchesImageMagic(f.buffer, mime)) {
+        throw new UnsupportedMediaTypeException('仅支持上传 JPEG / PNG / WebP 格式图片（单张不超过 3MB）');
+      }
+    }
+
+    const requestHash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          description: input.description,
+          files: files.map((f) => ({
+            type: f.mimetype,
+            digest: createHash('sha256').update(f.buffer!).digest('hex'),
+          })),
+        }),
+      )
+      .digest('hex');
+
+    if (input.requestKey) {
+      const existing = await this.reportRepo.findOne({
+        where: { teamId: user.teamId, reporterUserId: user.userId, requestKey: input.requestKey },
+      });
+      if (existing) {
+        if (existing.requestHash && existing.requestHash !== requestHash) {
+          throw new ConflictException('同一请求标识不能提交不同消息');
+        }
+        return existing;
+      }
+    }
+
+    const uploaded: PunchReportImageMeta[] = [];
+    const prefix = this.cfg.punchStorage.reportImagesPrefix;
+    try {
+      for (const f of files) {
+        const id = randomUUID();
+        const ext = ALLOWED_REPORT_IMAGE_TYPES.get(f.mimetype!)!;
+        const filename = `${id}${ext}`;
+        await this.s3Storage.putPunchPrivateObject(`${prefix}/${filename}`, f.buffer!, f.mimetype!);
+        uploaded.push({
+          id,
+          filename,
+          contentType: f.mimetype!,
+          sizeBytes: f.buffer!.length,
+        });
+      }
+    } catch (err) {
+      await Promise.all(
+        uploaded.map((img) => this.s3Storage.deletePunchPrivateObject(`${prefix}/${img.filename}`)),
+      );
+      throw err;
+    }
+
     const now = new Date();
+    const retentionMs = this.cfg.punchStorage.reportImageRetentionHours * 3600 * 1000;
+    const imagesExpireAt = uploaded.length > 0 ? new Date(now.getTime() + retentionMs) : null;
+
     const rec = this.reportRepo.create({
       id: newObjectIdHex(),
       teamId: user.teamId,
@@ -312,11 +521,11 @@ export class PunchTeamOpsController {
       reporterUsername: user.username,
       reporterDisplayName: user.displayName,
       description: input.description,
-      images: [],
-      imagesExpireAt: null,
+      images: uploaded,
+      imagesExpireAt,
       imagesPurgedAt: null,
       requestKey: input.requestKey ?? null,
-      requestHash: null,
+      requestHash,
       notificationPending: false,
       processingStatus: 'open',
       processingNote: null,
@@ -326,7 +535,37 @@ export class PunchTeamOpsController {
       createdAt: now,
       updatedAt: now,
     });
-    return this.reportRepo.save(rec);
+    const saved = await this.reportRepo.save(rec);
+
+    // 同步向管理员生成站内提醒并触发 SSE 刷新
+    const notifId = newObjectIdHex();
+    await this.notifRepo.save(
+      this.notifRepo.create({
+        id: notifId,
+        teamId: user.teamId,
+        userId: null,
+        audience: 'team_admin',
+        recipientUserIds: null,
+        deliveryKey: `report:${saved.id}`,
+        requestHash: null,
+        type: 'report.submitted',
+        title: `${user.displayName} 提交了新反馈`,
+        message: input.description.slice(0, 120),
+        payload: {
+          reportId: saved.id,
+          imageCount: uploaded.length,
+          imagesExpireAt: imagesExpireAt?.toISOString() ?? null,
+        },
+        sourceType: 'report',
+        sourceId: saved.id,
+        createdBy: user.userId,
+        acknowledgedAt: null,
+        createdAt: now,
+      }),
+    );
+    this.broadcastNotificationChange(user.teamId, { adminOnly: true });
+
+    return saved;
   }
 
   @Get('reports/admin')
@@ -352,20 +591,55 @@ export class PunchTeamOpsController {
   async processReport(
     @PunchCurrentUser() user: PunchAuthUser,
     @Param('reportId') reportId: string,
-    @Body() rawBody: { processingStatus?: 'open' | 'processed'; processingNote?: string },
+    @Body() rawBody: { status?: 'open' | 'processed'; note?: string; processingStatus?: 'open' | 'processed'; processingNote?: string },
   ) {
     const rec = await this.reportRepo.findOne({
       where: { id: reportId.trim(), teamId: user.teamId },
     });
     if (!rec) throw new NotFoundException('反馈记录不存在');
     const now = new Date();
-    rec.processingStatus = rawBody.processingStatus ?? 'processed';
-    rec.processingNote = rawBody.processingNote?.trim() ?? rec.processingNote;
+    rec.processingStatus = rawBody.processingStatus ?? rawBody.status ?? 'processed';
+    const nextNote = rawBody.processingNote ?? rawBody.note;
+    if (nextNote !== undefined) rec.processingNote = nextNote.trim();
     rec.processedBy = user.userId;
     rec.processedByDisplayName = user.displayName;
     rec.processedAt = now;
     rec.updatedAt = now;
     return this.reportRepo.save(rec);
+  }
+
+  @Get('reports/admin/:reportId/images/:imageId')
+  @PunchAdminOnly()
+  async getReportImage(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Param('reportId') reportId: string,
+    @Param('imageId') imageId: string,
+    @Res() res: ServerResponse,
+  ) {
+    const report = await this.reportRepo.findOne({
+      where: { id: reportId.trim(), teamId: user.teamId },
+    });
+    if (!report) throw new NotFoundException('反馈记录不存在');
+
+    if (report.imagesExpireAt && report.imagesExpireAt.getTime() <= Date.now()) {
+      throw new NotFoundException('举报图片已过期清理');
+    }
+
+    const image = (report.images ?? []).find((c) => c.id === imageId.trim());
+    if (!image || !REPORT_IMAGE_FILENAME_RE.test(image.filename)) {
+      throw new NotFoundException('举报图片不存在');
+    }
+
+    const key = `${this.cfg.punchStorage.reportImagesPrefix}/${image.filename}`;
+    const obj = await this.s3Storage.getPunchPrivateObject(key);
+    if (!obj) {
+      throw new NotFoundException('举报图片不存在');
+    }
+
+    res.setHeader('Content-Type', image.contentType || obj.contentType);
+    res.setHeader('Content-Length', String(obj.body.length));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.end(obj.body);
   }
 
   // ── LecPunch 站内通知 (/notifications/*) ──
@@ -375,14 +649,20 @@ export class PunchTeamOpsController {
     const items = await this.notifRepo
       .createQueryBuilder('n')
       .where('n.team_id = :teamId', { teamId: user.teamId })
-      .andWhere('(n.user_id = :uid OR n.audience = :all)', {
-        uid: user.userId,
-        all: 'team_members',
-      })
+      .andWhere(
+        user.role === 'admin'
+          ? '(n.user_id = :uid OR n.audience IN (:...audiences))'
+          : '(n.user_id = :uid OR n.audience = :all)',
+        {
+          uid: user.userId,
+          all: 'team_members',
+          audiences: ['team_members', 'team_admin'],
+        },
+      )
       .orderBy('n.created_at', 'DESC')
       .take(80)
       .getMany();
-    return { items };
+    return { items, nextCursor: items[items.length - 1]?.id ?? null };
   }
 
   @Get('notifications/me/unread-count')
@@ -390,7 +670,7 @@ export class PunchTeamOpsController {
     const count = await this.notifRepo.count({
       where: { teamId: user.teamId, userId: user.userId, acknowledgedAt: null as unknown as Date },
     });
-    return { count };
+    return { count, badgeCount: count };
   }
 
   @Patch('notifications/:notificationId/ack')
@@ -408,33 +688,153 @@ export class PunchTeamOpsController {
        VALUES ($1, $2, $3, $4, $5) ON CONFLICT (notification_id, user_id) DO NOTHING`,
       [newObjectIdHex(), notificationId.trim(), user.userId, user.teamId, now],
     );
-    return { ok: true };
+    this.broadcastNotificationChange(user.teamId, { userId: user.userId });
+    return { ok: true, acknowledgedAt: now.toISOString() };
   }
 
   @Post('notifications/admin/notices')
   @PunchAdminOnly()
-  createAdminNotice(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
+  async createAdminNotice(@PunchCurrentUser() user: PunchAuthUser, @Body() rawBody: unknown) {
     const input = AdminNoticeSchema.parse(rawBody);
     const id = newObjectIdHex();
+    const members = await this.userRepo.find({ where: { teamId: user.teamId, status: 'active' } });
+    const recipientUserIds = members.filter((m) => Boolean(m.logtoUserId)).map((m) => m.id);
     const rec = this.notifRepo.create({
       id,
       teamId: user.teamId,
       userId: null,
       audience: input.audience,
-      recipientUserIds: null,
-      deliveryKey: null,
+      recipientUserIds,
+      deliveryKey: input.requestKey ? `notice:${user.teamId}:${user.userId}:${input.requestKey}` : null,
       requestHash: null,
       type: 'admin.notice',
       title: input.title,
       message: input.message,
-      payload: {},
+      payload: { noticeId: randomUUID() },
       sourceType: 'admin_notice',
-      sourceId: id,
+      sourceId: input.requestKey ?? id,
       createdBy: user.userId,
       acknowledgedAt: null,
       createdAt: new Date(),
     });
-    return this.notifRepo.save(rec);
+    const saved = await this.notifRepo.save(rec);
+    this.broadcastNotificationChange(user.teamId);
+    return saved;
+  }
+
+  @Get('notifications/admin/sent')
+  @PunchAdminOnly()
+  async listSentNotices(@PunchCurrentUser() user: PunchAuthUser) {
+    const rows = await this.notifRepo.find({
+      where: {
+        teamId: user.teamId,
+        createdBy: user.userId,
+        type: In(['admin.notice', 'attendance.record_marked']),
+      },
+      order: { createdAt: 'DESC' },
+      take: 100,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      teamId: row.teamId,
+      userId: row.userId,
+      audience: row.audience,
+      type: row.type,
+      title: row.title,
+      message: row.message,
+      payload: row.payload,
+      sourceType: row.sourceType,
+      sourceId: row.sourceId,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt.toISOString(),
+      acknowledgedAt: row.acknowledgedAt ? row.acknowledgedAt.toISOString() : null,
+    }));
+  }
+
+  @Get('notifications/admin/:notificationId/read-status')
+  @PunchAdminOnly()
+  async getNoticeReadStatus(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Param('notificationId') notificationId: string,
+  ) {
+    const notice = await this.notifRepo.findOne({
+      where: {
+        id: notificationId.trim(),
+        teamId: user.teamId,
+        type: In(['admin.notice', 'attendance.record_marked']),
+      },
+    });
+    if (!notice) throw new NotFoundException('通知不存在');
+
+    const recipientIds =
+      notice.audience === 'team_members'
+        ? (notice.recipientUserIds ?? [])
+        : notice.userId
+          ? [notice.userId]
+          : [];
+
+    const [members, receipts] = await Promise.all([
+      recipientIds.length > 0
+        ? this.userRepo.find({ where: { id: In(recipientIds), teamId: user.teamId } })
+        : Promise.resolve([]),
+      this.receiptRepo.find({ where: { notificationId: notice.id, teamId: user.teamId } }),
+    ]);
+
+    const memberById = new Map(members.map((m) => [m.id, m]));
+    const readByUser = new Map(receipts.map((r) => [r.userId, r.readAt]));
+
+    return recipientIds.map((uid) => {
+      const readAt = readByUser.get(uid) ?? (uid === notice.userId ? notice.acknowledgedAt : null);
+      return {
+        userId: uid,
+        displayName: memberById.get(uid)?.displayName ?? '已移除成员',
+        readAt: readAt ? readAt.toISOString() : null,
+      };
+    });
+  }
+
+  @Get('notifications/stream')
+  streamNotifications(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Req() req: IncomingMessage,
+    @Res() res: ServerResponse,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    let closed = false;
+    const writeEvent = (event: string, data: unknown) => {
+      if (closed || res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const subscriber: SseSubscriber = { user, send: writeEvent };
+    this.sseSubscribers.add(subscriber);
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      clearTimeout(maxLifetime);
+      this.sseSubscribers.delete(subscriber);
+      if (!res.writableEnded) res.end();
+    };
+
+    const heartbeat = setInterval(() => {
+      if (closed) return;
+      writeEvent('heartbeat', {});
+    }, 30_000);
+    heartbeat.unref();
+
+    // 最长保持 1 小时连接后由前端 EventSource 自动重连刷新鉴权态
+    const maxLifetime = setTimeout(cleanup, 3600 * 1000);
+    maxLifetime.unref();
+
+    req.on('close', cleanup);
+    writeEvent('connected', {});
   }
 
   @Get('notifications/preferences')
@@ -462,13 +862,24 @@ export class PunchTeamOpsController {
 
   @Get('meet/token')
   getMeetToken(@PunchCurrentUser() user: PunchAuthUser) {
-    const secret = this.cfg.internalServiceToken || 'lec-meet-local-secret';
-    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const secret = this.cfg.meetJwtSecret || this.cfg.internalServiceToken || 'lec-meet-local-secret';
+    const appId = this.cfg.meetJwtAppId || 'lec-meet';
+    const nowSec = Math.floor(Date.now() / 1000);
+    const exp = nowSec + 3600;
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' }), 'utf8').toString('base64url');
     const payload = Buffer.from(
-      JSON.stringify({ sub: user.userId, name: user.displayName, teamId: user.teamId, exp }),
+      JSON.stringify({
+        iss: appId,
+        aud: 'jitsi',
+        sub: user.userId,
+        room: '*',
+        iat: nowSec,
+        exp,
+        context: { user: { id: user.userId, name: user.displayName, email: '' } },
+      }),
       'utf8',
     ).toString('base64url');
-    const sig = createHmac('sha256', secret).update(payload).digest('base64url');
-    return { token: `${payload}.${sig}`, expiresAt: exp * 1000 };
+    const sig = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
+    return { token: `${header}.${payload}.${sig}`, expiresAt: exp * 1000 };
   }
 }

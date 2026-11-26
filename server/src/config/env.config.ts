@@ -66,6 +66,18 @@ const RawEnvSchema = z.object({
   LEC_S3_PUBLIC_URL: envStr('https://drive.lecspace.top/orbit'),
   LEC_S3_KEY_PREFIX: envStr('orbit'),
 
+  // LecPunch 私有对象存储（卡牌立绘 + 举报附件图）与局域网会议签名配置
+  PUNCH_S3_ENDPOINT: envStr(''),
+  PUNCH_S3_BUCKET: envStr('lec-private'),
+  PUNCH_S3_REGION: envStr('us-east-1'),
+  PUNCH_S3_ACCESS_KEY: envStr(''),
+  PUNCH_S3_SECRET_KEY: envStr(''),
+  PUNCH_S3_CARD_ASSETS_PREFIX: envStr('punch/cards/20261027-v1'),
+  PUNCH_S3_REPORT_IMAGES_PREFIX: envStr('punch/reports'),
+  REPORT_IMAGE_RETENTION_HOURS: envInt(3, 1, 168),
+  MEET_JWT_APP_ID: envStr(''),
+  MEET_JWT_SECRET: envStr(''),
+
   GITHUB_TOKEN: envStr(''),
 
   // Economy（coin 乐币与 punch_minutes 打卡时长交易底层配置）
@@ -114,6 +126,19 @@ export interface AppConfig {
   s3SecretKey: string;
   s3PublicBaseUrl: string;
   s3KeyPrefix: string;
+
+  punchStorage: {
+    endpoint: string;
+    bucket: string;
+    region: string;
+    accessKey: string;
+    secretKey: string;
+    cardAssetsPrefix: string;
+    reportImagesPrefix: string;
+    reportImageRetentionHours: number;
+  };
+  meetJwtAppId: string;
+  meetJwtSecret: string;
 
   githubToken: string;
 
@@ -169,6 +194,19 @@ export function loadAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     s3SecretKey: parsed.LEC_S3_SECRET_KEY,
     s3PublicBaseUrl: parsed.LEC_S3_PUBLIC_URL.replace(/\/+$/, ''),
     s3KeyPrefix: parsed.LEC_S3_KEY_PREFIX.replace(/^\/+|\/+$/g, ''),
+
+    punchStorage: {
+      endpoint: (parsed.PUNCH_S3_ENDPOINT || parsed.LEC_S3_ENDPOINT).replace(/\/+$/, ''),
+      bucket: parsed.PUNCH_S3_BUCKET,
+      region: parsed.PUNCH_S3_REGION || parsed.LEC_S3_REGION,
+      accessKey: parsed.PUNCH_S3_ACCESS_KEY,
+      secretKey: parsed.PUNCH_S3_SECRET_KEY,
+      cardAssetsPrefix: parsed.PUNCH_S3_CARD_ASSETS_PREFIX.replace(/^\/+|\/+$/g, ''),
+      reportImagesPrefix: parsed.PUNCH_S3_REPORT_IMAGES_PREFIX.replace(/^\/+|\/+$/g, ''),
+      reportImageRetentionHours: parsed.REPORT_IMAGE_RETENTION_HOURS,
+    },
+    meetJwtAppId: parsed.MEET_JWT_APP_ID,
+    meetJwtSecret: parsed.MEET_JWT_SECRET,
 
     githubToken: parsed.GITHUB_TOKEN,
 

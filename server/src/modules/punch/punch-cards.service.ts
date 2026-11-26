@@ -5,6 +5,7 @@
  *   并强制每周付费抽卡上限（默认 20 抽/周），兼顾老成员存量消耗与新老成员公平平衡。
  */
 import { createHash, randomInt } from 'node:crypto';
+import type { ServerResponse } from 'node:http';
 import {
   BadRequestException,
   ConflictException,
@@ -13,17 +14,23 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Inject,
   Injectable,
+  NotFoundException,
   Param,
   Post,
   Body,
+  Res,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { z } from 'zod';
 import { getShanghaiWeekKey } from '../../common/utils/week-key.js';
+import { APP_CONFIG, type AppConfig } from '../../config/env.config.js';
 import { EconomyLedgerService } from '../economy/economy-ledger.service.js';
+import { S3StorageService } from '../storage/s3-storage.service.js';
 import {
   PunchCardActionArchiveEntity,
   PunchCardGameEntity,
@@ -163,6 +170,8 @@ export class PunchCardsService {
     private readonly userRepo: Repository<PunchUserEntity>,
     private readonly usersService: PunchUsersService,
     private readonly economyLedger: EconomyLedgerService,
+    private readonly s3Storage: S3StorageService,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
   private ensureMemberState(
@@ -416,6 +425,38 @@ export class PunchCardsService {
     });
     return rec ? { found: true, result: rec.result, at: rec.at } : { found: false };
   }
+
+  /**
+   * 代理读取 LecPunch 私有桶中的卡牌立绘（`lec-private/punch/cards/20261027-v1/{cardId}.png`）。
+   * 兼容外部公开编号 `card-01`..`card-21` 以及原始内部 cardId，仅允许已解锁该卡的成员读取。
+   */
+  async getCardArtwork(user: PunchAuthUser, rawId: string): Promise<{ body: Buffer; contentType: string }> {
+    const trimmed = rawId.trim();
+    const matched = CARD_CATALOG.find((card, idx) => {
+      const pubId = `card-${String(idx + 1).padStart(2, '0')}`;
+      return pubId === trimmed || card.id === trimmed;
+    });
+    if (!matched) {
+      throw new NotFoundException('卡片不存在');
+    }
+
+    const game = await this.gameRepo.findOne({ where: { teamId: user.teamId } });
+    const state = (game?.state ?? {}) as { members?: Record<string, MemberCardState> };
+    const member = state.members?.[user.userId];
+    if (!member?.discovered?.includes(matched.id)) {
+      throw new ForbiddenException('尚未发现这张卡片');
+    }
+
+    if (!this.s3Storage.isPunchPrivateConfigured()) {
+      throw new ServiceUnavailableException('卡牌私有对象存储尚未配置');
+    }
+    const key = `${this.cfg.punchStorage.cardAssetsPrefix}/${matched.id}.png`;
+    const obj = await this.s3Storage.getPunchPrivateObject(key);
+    if (!obj) {
+      throw new NotFoundException('卡牌图片暂不可用');
+    }
+    return { body: obj.body, contentType: 'image/png' };
+  }
 }
 
 @Controller()
@@ -429,6 +470,19 @@ export class PunchCardsController {
   @Get('cards/me')
   getMe(@PunchCurrentUser() user: PunchAuthUser) {
     return this.cardsService.getMe(user);
+  }
+
+  @Get('cards/art/:cardId')
+  async getArtwork(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Param('cardId') cardId: string,
+    @Res() res: ServerResponse,
+  ) {
+    const asset = await this.cardsService.getCardArtwork(user, cardId);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', asset.contentType);
+    res.setHeader('Content-Length', String(asset.body.length));
+    res.end(asset.body);
   }
 
   @Post('cards/actions')

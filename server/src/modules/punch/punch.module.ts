@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { EconomyModule } from '../economy/economy.module.js';
+import { StorageModule } from '../storage/storage.module.js';
 import {
   PunchMemberEligibilityEntity,
   PunchNetworkPolicyEntity,
@@ -55,6 +56,7 @@ import { PunchShopController } from './punch-shop.controller.js';
 @Module({
   imports: [
     EconomyModule,
+    StorageModule,
     TypeOrmModule.forFeature([
       PunchTeamEntity,
       PunchUserEntity,
