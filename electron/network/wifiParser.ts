@@ -158,6 +158,78 @@ export function parseNmcliWifiOutput(stdout: string): RawWifiSample[] {
   return [...byBssid.values()].sort((a, b) => b.rssi - a.rssi);
 }
 
+export interface NativeWlanParseResult {
+  ok: boolean;
+  samples: RawWifiSample[];
+  error?: string;
+  permissionDenied?: boolean;
+  shouldFallback?: boolean;
+}
+
+/** 解析 Windows 原生 wlanapi.dll（WlanScan + WlanGetNetworkBssList）输出的 JSON 载荷。 */
+export function parseNativeWlanJson(stdout: string): NativeWlanParseResult {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return { ok: false, samples: [], shouldFallback: true };
+  }
+  let parsed: {
+    ok?: boolean;
+    code?: number;
+    stage?: string;
+    networks?: Array<{ bssid?: string; ssid?: string; rssi?: number }>;
+  };
+  try {
+    parsed = JSON.parse(trimmed) as typeof parsed;
+  } catch {
+    return { ok: false, samples: [], shouldFallback: true };
+  }
+
+  if (!parsed.ok) {
+    const code = Number(parsed.code ?? 0);
+    if (code === 5) {
+      return {
+        ok: false,
+        samples: [],
+        permissionDenied: true,
+        error:
+          'Windows 定位权限未开启，系统阻止读取周边 Wi-Fi 列表：请在「设置 → 隐私和安全性 → 位置」中开启定位服务与桌面应用访问权限后重试。',
+      };
+    }
+    if (code === 1062 || code === 1060) {
+      return {
+        ok: false,
+        samples: [],
+        error: '当前设备未启用无线网络服务（WLAN AutoConfig），或台式机未安装无线网卡。',
+      };
+    }
+    if (parsed.stage === 'no_interface') {
+      return {
+        ok: false,
+        samples: [],
+        error: '未检测到开启状态的 Wi-Fi 网卡，请打开本机 Wi-Fi 开关（无需连接任何热点）后重试。',
+      };
+    }
+    return { ok: false, samples: [], shouldFallback: true };
+  }
+
+  const byBssid = new Map<string, RawWifiSample>();
+  for (const item of Array.isArray(parsed.networks) ? parsed.networks : []) {
+    const bssid = typeof item.bssid === 'string' ? normalizeBssid(item.bssid) : null;
+    if (!bssid) continue;
+    const rawRssi =
+      typeof item.rssi === 'number' && Number.isFinite(item.rssi) ? Math.round(item.rssi) : -75;
+    const rssi = Math.max(-100, Math.min(-20, rawRssi));
+    const ssid = typeof item.ssid === 'string' ? item.ssid.trim() : '';
+    const prev = byBssid.get(bssid);
+    if (!prev || rssi > prev.rssi) {
+      byBssid.set(bssid, { bssid, ssid: ssid || prev?.ssid || '', rssi });
+    }
+  }
+
+  const samples = [...byBssid.values()].sort((a, b) => b.rssi - a.rssi);
+  return { ok: true, samples };
+}
+
 /**
  * 合并多轮扫描结果：计算每个 BSSID 的出现次数、平均 RSSI，并智能标记疑似手机热点。
  */

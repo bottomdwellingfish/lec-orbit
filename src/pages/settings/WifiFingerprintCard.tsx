@@ -35,6 +35,7 @@ export function WifiFingerprintCard(): JSX.Element {
 
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanPermissionDenied, setScanPermissionDenied] = useState(false);
   const [scanned, setScanned] = useState<ScannedWifiNetwork[]>([]);
   const [selectedBssids, setSelectedBssids] = useState<Set<string>>(() => new Set());
   const [saving, setSaving] = useState(false);
@@ -145,11 +146,13 @@ export function WifiFingerprintCard(): JSX.Element {
   const handleScanEnvironment = async () => {
     setScanning(true);
     setScanError(null);
+    setScanPermissionDenied(false);
     try {
       const res = await getOrbitClient().system.scanWifi({ samples: 3, force: true });
       if (!res.ok || res.networks.length === 0) {
         setScanned([]);
         setSelectedBssids(new Set());
+        setScanPermissionDenied(Boolean(res.permissionDenied));
         setScanError(res.error || '未扫描到可用周边 Wi-Fi 信号，请确认已开启本机 Wi-Fi。');
         return;
       }
@@ -359,7 +362,22 @@ export function WifiFingerprintCard(): JSX.Element {
               )}
             </div>
 
-            {scanError && <Message tone="error">{scanError}</Message>}
+            {scanError && (
+              <Message tone="error">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                  <span>{scanError}</span>
+                  {scanPermissionDenied && (
+                    <Button
+                      variant="glass"
+                      size="small"
+                      onClick={() => void getOrbitClient().system.openLocationSettings()}
+                    >
+                      打开系统定位设置
+                    </Button>
+                  )}
+                </div>
+              </Message>
+            )}
 
             {scanned.length > 0 && (
               <div className={styles.wifiPanel}>

@@ -33,6 +33,7 @@ export interface NetworkPolicyStatus {
   requiredMatchCount?: number;
   configuredAnchorCount?: number;
   scanError?: string;
+  scanPermissionDenied?: boolean;
 }
 
 export interface WifiAnchorItem {

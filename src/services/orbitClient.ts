@@ -121,6 +121,7 @@ const browserFallback: OrbitBridge = {
       networks: [],
       error: '仅 Electron 桌面端支持读取周边 Wi-Fi 环境指纹。',
     }),
+    openLocationSettings: async () => false,
     getUpdateState: async () => ({ currentVersion: '0.1.0', available: false, checked: false, stage: 'idle' }),
     checkUpdate: async () => ({ currentVersion: '0.1.0', available: false, checked: false, stage: 'idle' }),
     downloadUpdate: async () => ({ currentVersion: '0.1.0', available: false, checked: false, stage: 'idle' }),

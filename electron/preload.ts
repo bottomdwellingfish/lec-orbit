@@ -116,6 +116,7 @@ const bridge: OrbitBridge = {
       ipcRenderer.invoke('orbit:system:updateTrayPunch', summary),
     scanWifi: (options?: WifiScanOptions) =>
       ipcRenderer.invoke('orbit:system:scanWifi', options ?? {}),
+    openLocationSettings: () => ipcRenderer.invoke('orbit:system:openLocationSettings'),
     getUpdateState: () => ipcRenderer.invoke('orbit:system:getUpdateState'),
     checkUpdate: () => ipcRenderer.invoke('orbit:system:checkUpdate'),
     downloadUpdate: () => ipcRenderer.invoke('orbit:system:downloadUpdate'),

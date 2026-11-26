@@ -178,6 +178,7 @@ interface WifiScanPayloadSample {
 async function collectWifiScanForApi(force: boolean): Promise<{
   samples: WifiScanPayloadSample[];
   error?: string;
+  permissionDenied?: boolean;
 }> {
   try {
     const res = await getOrbitClient().system.scanWifi({ samples: 1, force });
@@ -191,6 +192,7 @@ async function collectWifiScanForApi(force: boolean): Promise<{
     return {
       samples,
       error: res.ok ? undefined : res.error,
+      permissionDenied: res.ok ? undefined : res.permissionDenied,
     };
   } catch (err) {
     return {
@@ -314,6 +316,7 @@ export const punchApi = {
         configuredAnchorCount:
           typeof data.configuredAnchorCount === 'number' ? data.configuredAnchorCount : 0,
         scanError: scan.samples.length === 0 ? scan.error : undefined,
+        scanPermissionDenied: scan.samples.length === 0 ? scan.permissionDenied : undefined,
       };
     } catch (err) {
       // 兼容尚未部署 POST /network-policy/current-status 的旧版后端
