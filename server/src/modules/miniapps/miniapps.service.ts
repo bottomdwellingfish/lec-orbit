@@ -13,6 +13,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, type EntityManager } from 'typeorm';
 import type { AuthUser } from '../auth/auth.types.js';
+import { FunctionsService } from '../functions/functions.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { RosterService } from '../roster/roster.service.js';
 import { S3StorageService } from '../storage/s3-storage.service.js';
@@ -24,6 +25,7 @@ import {
   MINIAPP_MAX_BUNDLE_BYTES,
   normalizeAndValidateManifest,
   validateZipBundle,
+  type ExtractedFunctionBundle,
   type MiniAppManifest,
 } from './miniapp-validator.util.js';
 
@@ -162,6 +164,7 @@ export class MiniAppsService {
     private readonly s3: S3StorageService,
     private readonly roster: RosterService,
     private readonly notifications: NotificationsService,
+    private readonly functionsService?: FunctionsService,
   ) {}
 
   private reviewableReleases(repo: Repository<MiniAppVersionEntity>, appId: string) {
@@ -427,6 +430,7 @@ export class MiniAppsService {
       channel,
       changelog: (form.changelog ?? '').trim(),
       directPublish,
+      functionBundle: validated.functionBundle,
     });
   }
 
@@ -495,6 +499,7 @@ export class MiniAppsService {
       channel: string;
       changelog: string;
       directPublish: boolean;
+      functionBundle?: ExtractedFunctionBundle;
     },
   ): Promise<MiniAppCatalogDTO> {
     const verId = randomUUID();
@@ -565,6 +570,16 @@ export class MiniAppsService {
         reviewedAt: input.directPublish ? now : null,
       });
       await manager.save(MiniAppVersionEntity, ver);
+      if (input.functionBundle && this.functionsService) {
+        await this.functionsService.saveVersionBundleTx(
+          manager,
+          ver.id,
+          ver.appId,
+          ver.version,
+          input.functionBundle,
+          now,
+        );
+      }
       if (input.directPublish) await this.supersedeEarlierReleases(manager, ver);
 
       const active = input.directPublish ? ver : app.activeVersionId
@@ -616,6 +631,14 @@ export class MiniAppsService {
         createdAt: await this.submissionTime(manager, appId),
       });
       await versions.save(submission);
+      if (this.functionsService) {
+        await this.functionsService.cloneVersionBundleTx(
+          manager,
+          version.id,
+          submission.id,
+          submission.createdAt,
+        );
+      }
       return { app, submission };
     });
     await this.notifyPending(user, app, submission);

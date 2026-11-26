@@ -230,6 +230,25 @@ export class MiniAppContainerManager {
     this.syncMainWindowHostedViews();
   }
 
+  /** 将服务端 /api/v1/ws 推送的 miniapp.realtime 事件精确路由到对应 appId 的沙箱容器。 */
+  dispatchRealtimeEvent(payload: {
+    appId: string;
+    roomId?: string | null;
+    event: string;
+    payload?: unknown;
+    ts?: number;
+  }): void {
+    const inst = this.instances.get(payload.appId);
+    if (!inst || inst.view.webContents.isDestroyed()) return;
+    if (!inst.manifest.permissions.scopes.includes('realtime.room')) return;
+    inst.view.webContents.send('orbit:sdk:event:realtime', {
+      roomId: payload.roomId ?? null,
+      event: payload.event,
+      payload: payload.payload ?? null,
+      ts: payload.ts ?? Date.now(),
+    });
+  }
+
   /** 在主进程启动后调用一次，注册面向隔离容器的受控 window.orbitSDK IPC。 */
   registerSdkIpcHandlers(): void {
     if (this.sdkIpcRegistered) return;
@@ -640,6 +659,229 @@ export class MiniAppContainerManager {
       if (!resp.ok) {
         const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
         throw new Error(errBody.error || `打赏失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    // ── Orbit 托管云函数 FaaS（方案 E）调用与 SSE 流式转发 IPC ──
+
+    const FN_NAME_SCHEMA = z
+      .string()
+      .trim()
+      .regex(/^[a-zA-Z0-9_-]{1,48}$/, '无效的云函数名称');
+    const ROOM_ID_SCHEMA = z
+      .string()
+      .trim()
+      .regex(/^[a-zA-Z0-9:_-]{1,64}$/, '无效的房间 ID');
+
+    ipcMain.handle('orbit:sdk:cloud:call', async (event, rawInput) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('cloud.functions')) {
+        throw new Error('应用未在 manifest 中声明 cloud.functions 权限');
+      }
+      const input = z
+        .object({
+          fnName: FN_NAME_SCHEMA,
+          payload: z.unknown().optional(),
+          previewVersionId: z.string().uuid().optional(),
+        })
+        .parse(rawInput);
+
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法调用托管云函数');
+
+      const base = getOrbitEndpoints().orbitApiBase;
+      const qs = input.previewVersionId
+        ? `?previewVersionId=${encodeURIComponent(input.previewVersionId)}`
+        : '';
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/fn/${encodeURIComponent(input.fnName)}${qs}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(input.payload ?? {}),
+        },
+      );
+
+      const contentType = resp.headers.get('content-type') || '';
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        try {
+          const parsed = JSON.parse(errText) as { error?: string; message?: string };
+          throw new Error(parsed.error || parsed.message || `云函数执行失败（HTTP ${resp.status}）`);
+        } catch (err) {
+          if (err instanceof Error && err.message && !err.message.includes('JSON')) throw err;
+          throw new Error(errText || `云函数执行失败（HTTP ${resp.status}）`);
+        }
+      }
+      if (contentType.includes('application/json')) {
+        return resp.json();
+      }
+      return resp.text();
+    });
+
+    ipcMain.handle('orbit:sdk:cloud:stream', async (event, rawInput) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('cloud.functions')) {
+        throw new Error('应用未在 manifest 中声明 cloud.functions 权限');
+      }
+      const input = z
+        .object({
+          streamId: z.string().min(1).max(64),
+          fnName: FN_NAME_SCHEMA,
+          payload: z.unknown().optional(),
+          previewVersionId: z.string().uuid().optional(),
+        })
+        .parse(rawInput);
+
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法调用流式云函数');
+
+      const base = getOrbitEndpoints().orbitApiBase;
+      const qs = input.previewVersionId
+        ? `?previewVersionId=${encodeURIComponent(input.previewVersionId)}`
+        : '';
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/fn/${encodeURIComponent(input.fnName)}${qs}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream, application/json',
+          },
+          body: JSON.stringify(input.payload ?? {}),
+        },
+      );
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        let msg = `流式云函数执行失败（HTTP ${resp.status}）`;
+        try {
+          const parsed = JSON.parse(errText) as { error?: string; message?: string };
+          if (parsed.error || parsed.message) msg = parsed.error || parsed.message || msg;
+        } catch {
+          if (errText) msg = errText;
+        }
+        throw new Error(msg);
+      }
+
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream') || !resp.body) {
+        const text = await resp.text();
+        let data: unknown = text;
+        if (contentType.includes('application/json')) {
+          try {
+            data = JSON.parse(text);
+          } catch {
+            // 保持原文本
+          }
+        }
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('orbit:sdk:event:cloudStreamChunk', {
+            streamId: input.streamId,
+            chunk: data,
+          });
+          event.sender.send('orbit:sdk:event:cloudStreamChunk', {
+            streamId: input.streamId,
+            done: true,
+          });
+        }
+        return { ok: true };
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() ?? '';
+          for (const frame of frames) {
+            const dataLines = frame
+              .split('\n')
+              .filter((line) => line.startsWith('data:'))
+              .map((line) => line.slice(5).trimStart());
+            if (dataLines.length === 0) continue;
+            const rawData = dataLines.join('\n');
+            if (rawData === '[DONE]') continue;
+            let parsedChunk: unknown = rawData;
+            try {
+              parsedChunk = JSON.parse(rawData);
+            } catch {
+              // 纯文本分片直接透传
+            }
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('orbit:sdk:event:cloudStreamChunk', {
+                streamId: input.streamId,
+                chunk: parsedChunk,
+              });
+            }
+          }
+        }
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('orbit:sdk:event:cloudStreamChunk', {
+            streamId: input.streamId,
+            done: true,
+          });
+        }
+        return { ok: true };
+      } finally {
+        reader.releaseLock();
+      }
+    });
+
+    // ── Orbit 房间实时消息通道（复用 /api/v1/ws） ──
+
+    ipcMain.handle('orbit:sdk:realtime:joinRoom', async (event, rawRoomId) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('realtime.room')) {
+        throw new Error('应用未在 manifest 中声明 realtime.room 权限');
+      }
+      const roomId = ROOM_ID_SCHEMA.parse(rawRoomId);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法加入实时房间');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/realtime/rooms/${encodeURIComponent(roomId)}/join`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `加入实时房间失败（HTTP ${resp.status}）`);
+      }
+      return resp.json();
+    });
+
+    ipcMain.handle('orbit:sdk:realtime:leaveRoom', async (event, rawRoomId) => {
+      const inst = resolveCaller(event.sender.id);
+      if (!inst.manifest.permissions.scopes.includes('realtime.room')) {
+        throw new Error('应用未在 manifest 中声明 realtime.room 权限');
+      }
+      const roomId = ROOM_ID_SCHEMA.parse(rawRoomId);
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法离开实时房间');
+      const base = getOrbitEndpoints().orbitApiBase;
+      const resp = await fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/realtime/rooms/${encodeURIComponent(roomId)}/leave`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        },
+      );
+      if (!resp.ok) {
+        const errBody = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `离开实时房间失败（HTTP ${resp.status}）`);
       }
       return resp.json();
     });

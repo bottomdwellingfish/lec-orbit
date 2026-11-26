@@ -8,14 +8,22 @@ import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import yauzl, { type Entry } from 'yauzl';
 import { detectImageType } from '../announcements/announcements.service.js';
+import type { StoredFunctionFile } from '../functions/entities/functions.entities.js';
+import { scanFunctionSourceSafety } from '../functions/functions-context.util.js';
 
 export const MINIAPP_MAX_BUNDLE_BYTES = 100 * 1024 * 1024;
 export const MINIAPP_MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024;
 export const MINIAPP_MAX_FILE_COUNT = 5000;
 export const MINIAPP_MAX_ICON_BYTES = 2 * 1024 * 1024;
+export const MINIAPP_MAX_FN_FILE_COUNT = 32;
+export const MINIAPP_MAX_FN_SINGLE_BYTES = 2 * 1024 * 1024;
+export const MINIAPP_MAX_FN_TOTAL_BYTES = 5 * 1024 * 1024;
 
 const APP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const FN_ROUTE_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
+const FN_ALLOWED_EXTS = new Set(['.ts', '.js', '.mjs', '.json', '.wasm']);
+const FN_CODE_EXTS = new Set(['.ts', '.js', '.mjs']);
 
 const VALID_TYPES = new Set(['miniapp', 'minigame']);
 const VALID_ENGINES = new Set(['web', 'cocos', 'unity', 'godot', 'other']);
@@ -28,7 +36,24 @@ const VALID_SCOPES = new Set([
   'economy.wager.coin',
   'economy.wager.punch',
   'economy.tip',
+  'cloud.functions',
+  'realtime.room',
 ]);
+
+export interface MiniAppFunctionsManifest {
+  dir: string;
+  timeoutMs: number;
+  allowStreaming: boolean;
+  routes: string[];
+}
+
+export interface ExtractedFunctionBundle {
+  routes: string[];
+  files: StoredFunctionFile[];
+  timeoutMs: number;
+  allowStreaming: boolean;
+  sha256: string;
+}
 
 export interface MiniAppManifest {
   schemaVersion: number;
@@ -62,6 +87,7 @@ export interface MiniAppManifest {
     scopes: string[];
     networkDomains: string[];
   };
+  functions?: MiniAppFunctionsManifest;
 }
 
 export interface ValidatedZipBundle {
@@ -73,6 +99,7 @@ export interface ValidatedZipBundle {
   iconBytes?: Buffer;
   iconContentType?: string;
   iconExt?: string;
+  functionBundle?: ExtractedFunctionBundle;
 }
 
 /** 规范化并校验 orbit.manifest.json 内容，不合法抛出中文错误。 */
@@ -165,6 +192,52 @@ export function normalizeAndValidateManifest(raw: Partial<MiniAppManifest>): Min
     throw new Error('networkDomains 最多声明 16 个域名');
   }
 
+  let functionsConfig: MiniAppFunctionsManifest | undefined;
+  if (raw.functions !== undefined && raw.functions !== null) {
+    if (typeof raw.functions !== 'object') {
+      throw new Error('manifest.functions 必须是对象配置');
+    }
+    const rawFn = raw.functions as Partial<MiniAppFunctionsManifest>;
+    const dir = (rawFn.dir ?? 'functions').trim().replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!dir || dir.startsWith('/') || dir.includes('..') || dir.includes('\\')) {
+      throw new Error(`云函数目录路径非法：${rawFn.dir}`);
+    }
+    const routes = Array.isArray(rawFn.routes)
+      ? Array.from(
+          new Set(
+            rawFn.routes
+              .filter((r): r is string => typeof r === 'string')
+              .map((r) => r.trim())
+              .filter(Boolean),
+          ),
+        )
+      : [];
+    if (routes.length === 0 || routes.length > 16) {
+      throw new Error('manifest.functions.routes 需声明 1~16 个云函数路由名');
+    }
+    for (const r of routes) {
+      if (!FN_ROUTE_PATTERN.test(r)) {
+        throw new Error(`云函数路由名非法（仅支持字母、数字、下划线与短横线）：${r}`);
+      }
+    }
+    const allowStreaming = Boolean(rawFn.allowStreaming);
+    const maxTimeout = allowStreaming ? 60_000 : 10_000;
+    const defaultTimeout = allowStreaming ? 30_000 : 5_000;
+    const rawTimeout = typeof rawFn.timeoutMs === 'number' && Number.isFinite(rawFn.timeoutMs)
+      ? Math.floor(rawFn.timeoutMs)
+      : defaultTimeout;
+    const timeoutMs = Math.min(Math.max(rawTimeout, 1_000), maxTimeout);
+    if (!scopes.includes('cloud.functions')) {
+      throw new Error('声明了 manifest.functions 时，必须在 permissions.scopes 中添加 cloud.functions');
+    }
+    functionsConfig = {
+      dir,
+      timeoutMs,
+      allowStreaming,
+      routes,
+    };
+  }
+
   return {
     schemaVersion,
     id,
@@ -197,6 +270,7 @@ export function normalizeAndValidateManifest(raw: Partial<MiniAppManifest>): Min
       scopes,
       networkDomains,
     },
+    ...(functionsConfig ? { functions: functionsConfig } : {}),
   };
 }
 
@@ -396,6 +470,79 @@ export function validateZipBundle(data: Buffer): Promise<ValidatedZipBundle> {
               } catch {
                 // 图标提取失败不阻塞包上传
               }
+            }
+
+            // 可选提取并静态安全扫描 Orbit 托管云函数目录（支持 .ts/.js/.mjs/.json/.wasm）
+            if (manifest.functions) {
+              const fnPrefix = `${manifest.functions.dir}/`;
+              const fnEntries: Array<{ relPath: string; entry: Entry }> = [];
+              for (const [path, entry] of fileMap.entries()) {
+                if (!path.startsWith(fnPrefix)) continue;
+                const relPath = path.slice(fnPrefix.length);
+                if (!relPath || relPath.startsWith('.') || relPath.includes('/.')) continue;
+                const ext = extname(relPath).toLowerCase();
+                if (!FN_ALLOWED_EXTS.has(ext)) {
+                  throw new Error(
+                    `云函数目录包含不支持的文件类型（${path}），仅允许 .ts / .js / .mjs / .json / .wasm`,
+                  );
+                }
+                fnEntries.push({ relPath, entry });
+              }
+
+              if (fnEntries.length === 0) {
+                throw new Error(`manifest.functions 声明的目录 ${manifest.functions.dir}/ 为空`);
+              }
+              if (fnEntries.length > MINIAPP_MAX_FN_FILE_COUNT) {
+                throw new Error(`云函数文件数超过上限（最多 ${MINIAPP_MAX_FN_FILE_COUNT} 个文件）`);
+              }
+
+              fnEntries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+              // 校验每个声明的路由都有对应的入口源码文件
+              const relSet = new Set(fnEntries.map((f) => f.relPath));
+              for (const route of manifest.functions.routes) {
+                const hasEntry =
+                  relSet.has(`${route}.ts`) ||
+                  relSet.has(`${route}.js`) ||
+                  relSet.has(`${route}.mjs`);
+                if (!hasEntry) {
+                  throw new Error(
+                    `云函数路由 "${route}" 缺少入口文件（需提供 ${manifest.functions.dir}/${route}.ts 或 .js/.mjs）`,
+                  );
+                }
+              }
+
+              const storedFiles: StoredFunctionFile[] = [];
+              let fnTotalBytes = 0;
+              const bundleHash = createHash('sha256');
+              for (const item of fnEntries) {
+                const buf = await readZipEntryBuffer(zipfile, item.entry, MINIAPP_MAX_FN_SINGLE_BYTES);
+                fnTotalBytes += buf.length;
+                if (fnTotalBytes > MINIAPP_MAX_FN_TOTAL_BYTES) {
+                  throw new Error('云函数目录总体积超过 5MB 上限');
+                }
+                const ext = extname(item.relPath).toLowerCase();
+                const isBinary = ext === '.wasm';
+                if (FN_CODE_EXTS.has(ext)) {
+                  scanFunctionSourceSafety(buf.toString('utf8'), `${manifest.functions.dir}/${item.relPath}`);
+                }
+                const contentBase64 = buf.toString('base64');
+                bundleHash.update(item.relPath).update('\0').update(buf).update('\0');
+                storedFiles.push({
+                  path: item.relPath,
+                  contentBase64,
+                  isBinary,
+                  sizeBytes: buf.length,
+                });
+              }
+
+              result.functionBundle = {
+                routes: manifest.functions.routes,
+                files: storedFiles,
+                timeoutMs: manifest.functions.timeoutMs,
+                allowStreaming: manifest.functions.allowStreaming,
+                sha256: bundleHash.digest('hex'),
+              };
             }
 
             if (!settled) {

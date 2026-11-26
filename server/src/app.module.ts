@@ -12,6 +12,7 @@ import { MiniAppsModule } from './modules/miniapps/miniapps.module.js';
 import { EconomyModule } from './modules/economy/economy.module.js';
 import { PunchModule } from './modules/punch/punch.module.js';
 import { NakamaModule } from './modules/nakama/nakama.module.js';
+import { FunctionsModule } from './modules/functions/functions.module.js';
 import { HealthController } from './modules/health/health.controller.js';
 
 @Global()
@@ -41,6 +42,7 @@ class AppConfigModule {}
     EconomyModule,
     PunchModule,
     NakamaModule,
+    FunctionsModule,
   ],
   controllers: [HealthController],
 })

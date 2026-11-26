@@ -900,6 +900,19 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
       });
       return;
     }
+    if (event.type === 'miniapp.realtime') {
+      const p = event.payload;
+      if (typeof p.appId === 'string' && typeof p.event === 'string') {
+        void getOrbitClient().hub.dispatchRealtimeEvent({
+          appId: p.appId,
+          roomId: typeof p.roomId === 'string' ? p.roomId : null,
+          event: p.event,
+          payload: p.payload,
+          ts: typeof p.ts === 'number' ? p.ts : Date.now(),
+        });
+      }
+      return;
+    }
     if (event.type === 'notification.updated') {
       const p = event.payload;
       const id = String(p.id ?? '');

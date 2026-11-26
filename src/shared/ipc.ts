@@ -455,5 +455,6 @@ export interface OrbitBridge {
     listAppPrefs: () => Promise<MiniAppUserPref[]>;
     onRuntimeChanged: (listener: (snapshot: MiniAppRuntimeSnapshot) => void) => () => void;
     onToastRequested: (listener: (payload: { appId: string; appName: string; message: string; tone?: 'info' | 'success' | 'warning' | 'error' }) => void) => () => void;
+    dispatchRealtimeEvent: (payload: { appId: string; roomId?: string | null; event: string; payload?: unknown; ts?: number }) => Promise<void>;
   };
 }

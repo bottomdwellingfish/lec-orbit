@@ -1,12 +1,12 @@
 # `window.orbitSDK` API 参考
 
-在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.1.0`）。
+在 Orbit 工坊容器内运行时，沙箱 Preload 会自动向全局注入只读对象 `window.orbitSDK`（当前版本 `1.2.0`）。
 如果你使用 TypeScript 或需要在普通浏览器中也能无报错预览，推荐直接引入 `apps/lec-orbit/sdk/orbit-sdk.ts` 的 `getOrbitSDK()`，它会在非 Orbit 环境下自动降级到 `localStorage` 与模拟用户。
 
 ## 基础属性
 
 ```ts
-window.orbitSDK.sdkVersion // '1.1.0'
+window.orbitSDK.sdkVersion // '1.2.0'
 window.orbitSDK.isOrbit    // true（浏览器降级封装中为 false）
 ```
 
@@ -223,4 +223,51 @@ await socket.connect(session, true);
 ```ts
 const wallet = await window.orbitSDK.economy!.getWallet();
 console.log('当前可用乐币:', wallet.coinBalance, '本周可交易打卡分钟:', wallet.weeklyTradeMinutes);
+```
+
+---
+
+## `cloud` — 托管云函数调用（Orbit FaaS）
+
+> 需在 `orbit.manifest.json` 中声明 `permissions.scopes: ["cloud.functions"]` 与 `functions` 配置块。完整指南见 [托管云函数（Orbit FaaS）](/guide/cloud-functions)。
+
+### `cloud.call(fnName, payload?, options?)`
+调用当前应用随包部署的云函数路由并返回结果：
+
+```ts
+const res = await window.orbitSDK.cloud!.call<{ ok: boolean; roomId: string }>('deal', {
+  roomId: 'room-01',
+});
+```
+
+### `cloud.stream(fnName, payload, onChunk, options?)`
+调用启用了 `allowStreaming: true` 的 SSE 流式云函数，逐片触发 `onChunk` 回调：
+
+```ts
+await window.orbitSDK.cloud!.stream<{ delta: string }>(
+  'chat',
+  { prompt: '帮我总结今日打卡数据' },
+  (chunk) => console.log('收到分片:', chunk.delta),
+);
+```
+
+> 调试未上架的预览版本时，作者或队长可在 `options` 中传入 `{ previewVersionId }`。
+
+---
+
+## `realtime` — 房间实时消息通道
+
+> 需在 `orbit.manifest.json` 的 `permissions.scopes` 中声明 `"realtime.room"`。底层直接复用 Orbit 主通道 `/api/v1/ws`，免自建 WebSocket。
+
+| 方法 | 签名 | 说明 |
+| --- | --- | --- |
+| `realtime.joinRoom` | `(roomId: string) => Promise<{ ok: boolean; appId: string; roomId: string }>` | 加入房间，开始接收云函数 `ctx.realtime.broadcastRoom` 广播 |
+| `realtime.leaveRoom` | `(roomId: string) => Promise<{ ok: boolean; appId: string; roomId: string }>` | 离开房间 |
+| `realtime.onMessage` | `(listener: (msg: OrbitRealtimeMessage) => void) => () => void` | 监听点对点推送（如发暗牌）或房间广播，返回取消订阅函数 |
+
+```ts
+await window.orbitSDK.realtime!.joinRoom('room-01');
+const off = window.orbitSDK.realtime!.onMessage((msg) => {
+  console.log(`[${msg.roomId ?? '私信'}] ${msg.event}`, msg.payload);
+});
 ```

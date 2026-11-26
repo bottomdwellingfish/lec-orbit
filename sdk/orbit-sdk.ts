@@ -1,5 +1,5 @@
 /**
- * @lec-space/orbit-sdk（v1.1.0）
+ * @lec-space/orbit-sdk（v1.2.0）
  * 面向 Orbit 工坊小程序（React/Vue/Vanilla）与 Cocos Creator 3.x 的标准 TypeScript SDK。
  * 在 Orbit 容器外（例如普通浏览器预览）自动提供本地 localStorage 降级实现。
  */
@@ -94,6 +94,43 @@ export interface OrbitMultiplayerAPI {
   getNakamaSession: () => Promise<OrbitNakamaSession>;
 }
 
+export interface OrbitCloudCallOptions {
+  /** 仅作者与队长调试未上架版本时可指定预览版本 ID。 */
+  previewVersionId?: string;
+}
+
+export interface OrbitCloudAPI {
+  /** 调用本应用随包部署的 Orbit 托管云函数（需声明 cloud.functions 权限）。 */
+  call: <T = unknown>(
+    fnName: string,
+    payload?: unknown,
+    options?: OrbitCloudCallOptions,
+  ) => Promise<T>;
+  /** 调用支持 SSE 流式输出的托管云函数（如 AI 打字机），逐片回调 onChunk。 */
+  stream: <T = unknown>(
+    fnName: string,
+    payload: unknown,
+    onChunk: (chunk: T) => void,
+    options?: OrbitCloudCallOptions,
+  ) => Promise<void>;
+}
+
+export interface OrbitRealtimeMessage {
+  roomId: string | null;
+  event: string;
+  payload: unknown;
+  ts: number;
+}
+
+export interface OrbitRealtimeAPI {
+  /** 加入房间以接收云函数 ctx.realtime.broadcastRoom 广播。 */
+  joinRoom: (roomId: string) => Promise<{ ok: boolean; appId: string; roomId: string }>;
+  /** 离开指定实时房间。 */
+  leaveRoom: (roomId: string) => Promise<{ ok: boolean; appId: string; roomId: string }>;
+  /** 监听云函数推送的点对点消息（如发暗牌）或房间广播。 */
+  onMessage: (listener: (msg: OrbitRealtimeMessage) => void) => () => void;
+}
+
 export interface OrbitUserProfile {
   userId: string;
   username?: string;
@@ -114,7 +151,7 @@ export interface OrbitEnvInfo {
 }
 
 export interface OrbitSDK {
-  sdkVersion: '1.1.0' | '1.0.0';
+  sdkVersion: '1.2.0' | '1.1.0' | '1.0.0';
   isOrbit: boolean;
   env: {
     getInfo: () => Promise<OrbitEnvInfo>;
@@ -144,6 +181,8 @@ export interface OrbitSDK {
   };
   economy?: OrbitEconomyAPI;
   multiplayer?: OrbitMultiplayerAPI;
+  cloud?: OrbitCloudAPI;
+  realtime?: OrbitRealtimeAPI;
 }
 
 declare global {
@@ -162,7 +201,7 @@ function createBrowserFallbackSDK(): OrbitSDK {
       : 'light';
 
   return {
-    sdkVersion: '1.1.0',
+    sdkVersion: '1.2.0',
     isOrbit: false,
     env: {
       getInfo: async () => ({
@@ -324,6 +363,19 @@ function createBrowserFallbackSDK(): OrbitSDK {
       getNakamaSession: async () => {
         throw new Error('浏览器独立预览环境无法直接换取工作室 Nakama 凭证，请在 Orbit 容器内运行');
       },
+    },
+    cloud: {
+      call: async () => {
+        throw new Error('浏览器独立预览环境无法调用 Orbit 托管云函数，请在 Orbit 客户端容器内运行');
+      },
+      stream: async () => {
+        throw new Error('浏览器独立预览环境无法调用 Orbit 流式云函数，请在 Orbit 客户端容器内运行');
+      },
+    },
+    realtime: {
+      joinRoom: async (roomId) => ({ ok: true, appId: 'browser-dev', roomId }),
+      leaveRoom: async (roomId) => ({ ok: true, appId: 'browser-dev', roomId }),
+      onMessage: () => () => undefined,
     },
   };
 }

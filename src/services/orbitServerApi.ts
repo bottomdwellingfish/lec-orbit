@@ -61,7 +61,8 @@ export interface OrbitWsEvent {
     | 'announcement.deleted'
     | 'announcement.receipt'
     | 'notification.created'
-    | 'notification.updated';
+    | 'notification.updated'
+    | 'miniapp.realtime';
   payload: Record<string, unknown>;
 }
 
