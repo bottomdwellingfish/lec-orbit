@@ -68,6 +68,39 @@ public class GameManager : MonoBehaviour
 }
 ```
 
+### 组队邀请与一键直达进房（SDK v1.3.0+）
+
+`OrbitSDK.cs` 已内置完整的 Nakama 换票与工作室组队邀请桥接，支持冷启动自动进房与运行中热进房：
+
+```csharp
+void Start()
+{
+    if (!OrbitSDK.IsRunningInOrbit) return;
+
+    // 1. 订阅冷/热直达进房事件（Preload 层会自动缓冲早于 Start 到达的冷启动邀请）
+    orbit.SubscribeRoomJoin(roomJson =>
+    {
+        Debug.Log("收到直达进房指令: " + roomJson);
+        // 解析 roomId / roomName / inviter / meta 后连接 Nakama 加入对应房间
+    });
+
+    // 2. 拉取可邀请的工作室队友列表（正在玩本游戏的同学排在最前）
+    orbit.ListStudioMembers(membersJson =>
+    {
+        Debug.Log("可邀请队友列表: " + membersJson);
+    });
+}
+
+public void InviteTeammate(string targetUserId, string roomId)
+{
+    var payload = $"{{\"toUserIds\":[\"{targetUserId}\"],\"roomId\":\"{roomId}\",\"roomName\":\"1号联机房\",\"mode\":\"standalone\"}}";
+    orbit.SendRoomInvite(payload, resJson =>
+    {
+        Debug.Log("邀请结果: " + resJson);
+    });
+}
+```
+
 ## 3. 配置 `orbit.manifest.json`
 
 在 Unity WebGL 输出目录根目录（与 `index.html`、`Build/` 同级）放入 `orbit.manifest.json`：

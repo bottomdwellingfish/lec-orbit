@@ -44,6 +44,28 @@ func _on_game_over(score: int) -> void:
 	OrbitBridge.toast("本局得分 %d，已写入云存档！" % score, "success")
 ```
 
+### 组队邀请与一键直达进房（SDK v1.3.0+）
+
+`OrbitBridge.gd` 已内置 `request_nakama_session`、`request_studio_members`、`send_room_invite` 以及 `room_join_received` 信号：
+
+```gdscript
+func _ready() -> void:
+	OrbitBridge.room_join_received.connect(_on_room_join_received)
+	OrbitBridge.studio_members_loaded.connect(_on_members_loaded)
+	OrbitBridge.request_studio_members()
+
+func _on_members_loaded(members: Array) -> void:
+	print("可邀请的工作室队友：", members)
+
+func invite_teammates(user_ids: Array, room_id: String) -> void:
+	OrbitBridge.send_room_invite(user_ids, room_id, "地牢 1 号房", "3 缺 1，速来！", "standalone")
+
+func _on_room_join_received(payload: Dictionary) -> void:
+	var room_id: String = str(payload.get("roomId", ""))
+	if room_id != "":
+		print("一键直达进入房间：", room_id, " 邀请人：", payload.get("inviter", {}))
+```
+
 ## 3. 配置 `orbit.manifest.json`
 
 在 Godot 导出目录中（与 `index.html`、`index.wasm`、`index.pck` 同级）放置 `orbit.manifest.json`：

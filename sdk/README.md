@@ -52,15 +52,20 @@
 1. 构建平台选择 **Web Desktop**（固定比例）或 **Web Mobile**（竖屏可默认 `sidepanel` 贴在软件右侧！）。
 2. 复制 `sdk/orbit-sdk.ts` 与 `sdk/engines/cocos/OrbitBridge.ts` 接入成员信息与云存档。
 
-## 3. 内置多人联机 BaaS（Nakama 3.26.0，免写服务端）
+## 3. 内置多人联机 BaaS 与组队直达进房（SDK v1.3.0+）
 
-Orbit 已在集群内置托管 Nakama 联机服务并与工作室 LecSSO 打通：
+Orbit 已在集群内置托管 Nakama 3.26.0 联机服务并与工作室 LecSSO 打通：
 
 1. 在 `orbit.manifest.json` 的 `permissions.networkDomains` 中添加 `"orbit.lecspace.top"`；
 2. 安装 `@heroiclabs/nakama-js`（Unity / Godot 可直接使用对应官方 Nakama SDK）；
-3. 调用 `getOrbitSDK().multiplayer.getNakamaSession()` 一键换取当前成员的 Nakama JWT（前端零 `Server Key`），使用返回的 `host / port / useSSL / token / refreshToken` 直连即可创建联机房间、自动匹配、排行榜与云端对象存储。
+3. 调用 `getOrbitSDK().multiplayer.getNakamaSession()` 一键换取当前成员的 Nakama JWT（前端零 `Server Key`），使用返回的 `host / port / useSSL / token / refreshToken` 直连即可创建联机房间、自动匹配、排行榜与云端对象存储；
+4. **一键邀请工作室同学组队并直达房间（SDK v1.3.0+）**：
+   - 调用 `multiplayer.listStudioMembers()` 拉取可邀请的工作室成员（正在玩本游戏的同学自动置顶）；
+   - 调用 `multiplayer.sendRoomInvite({ toUserIds, roomId, roomName, message, mode, meta })` 向队友推送 Orbit 实时邀请卡片；
+   - 对方点击「接受并进房」后，Orbit 自动下载/启动游戏（若已打开同版本则零刷新热进房），通过 `multiplayer.getLaunchRoom()` / `multiplayer.onRoomJoin(cb)` 接收房间上下文；
+   - 三大引擎均已提供开箱即用的桥接封装：`sdk/engines/cocos/OrbitBridge.ts`、`sdk/engines/unity/OrbitBridge.jslib + OrbitSDK.cs`、`sdk/engines/godot/OrbitBridge.gd`。
 
-> 完整建房、匹配与命名空间隔离实战见 [Orbit 工坊文档 · 多人联机指南](../docs/guide/multiplayer.md)。
+> 完整建房、组队邀请与命名空间隔离实战见 [Orbit 工坊文档 · 多人联机指南](../docs/guide/multiplayer.md) 与 [SDK API 参考](../docs/api/orbit-sdk.md)。
 
 ## 4. 体积与上传规则
 - **≤ 100 MB**：直接在 Orbit「工坊 → 上传 / 导入」选择 ZIP 包，直传校园 RustFS，成员首次打开自动下载并本地缓存，二次启动 0 流量秒开。

@@ -56,6 +56,27 @@ export class GameBootstrap extends Component {
 }
 ```
 
+### 组队邀请与一键直达进房（SDK v1.3.0+）
+
+`CocosOrbitBridge` 已封装 `listStudioMembers`、`sendRoomInvite`、`getLaunchRoom`、`onRoomJoin` 与 `onInviteResponded`：
+
+```ts
+// 1. 拉取可邀请队友（正在玩本游戏的同学自动置顶）并发送邀请
+const teammates = await CocosOrbitBridge.listStudioMembers();
+await CocosOrbitBridge.sendRoomInvite({
+  toUserIds: [teammates[0].userId],
+  roomId: match.match_id,
+  roomName: '塔防合作房',
+  message: '来一起守第 10 波！',
+  mode: 'standalone',
+});
+
+// 2. 启动时兼容冷启动 + 热进房
+const launchRoom = await CocosOrbitBridge.getLaunchRoom();
+if (launchRoom) joinRoom(launchRoom.roomId);
+CocosOrbitBridge.onRoomJoin((payload) => joinRoom(payload.roomId));
+```
+
 ## 3. 添加 `orbit.manifest.json`
 
 在构建输出目录（如 `build/web-desktop/`）根目录放入 `orbit.manifest.json`（推荐放在 Cocos 的 `build-templates/web-desktop/orbit.manifest.json`，这样每次构建会自动拷贝进去，免手动复制！）：
