@@ -1281,9 +1281,20 @@ export class PunchCardsController {
   }
 
   @Get('stats/member/:memberKey/cards')
-  memberCards(@PunchCurrentUser() user: PunchAuthUser, @Param('memberKey') memberKey: string) {
+  async memberCards(@PunchCurrentUser() user: PunchAuthUser, @Param('memberKey') memberKey: string) {
     const uid = this.usersService.resolveMemberKey(memberKey);
     if (!uid) throw new BadRequestException('无效的 memberKey');
-    return this.cardsService.getMemberCards(user.teamId, uid);
+    const member = await this.usersService.findById(uid);
+    if (!member || member.teamId !== user.teamId) {
+      throw new ForbiddenException('不可查看其他团队成员的卡牌库存');
+    }
+    const result = await this.cardsService.getMemberCards(user.teamId, uid);
+    return {
+      member: {
+        memberKey,
+        displayName: member.displayName,
+      },
+      ...result,
+    };
   }
 }

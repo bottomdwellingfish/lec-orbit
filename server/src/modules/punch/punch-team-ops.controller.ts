@@ -230,22 +230,24 @@ export class PunchTeamOpsController implements OnModuleInit, OnModuleDestroy {
   // ── 团队活动 (/team-events/*) ──
 
   @Get('team-events/events')
-  listPublicEvents(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.eventRepo.find({
+  async listPublicEvents(@PunchCurrentUser() user: PunchAuthUser) {
+    const items = await this.eventRepo.find({
       where: { teamId: user.teamId },
       order: { eventAt: 'DESC' },
       take: 100,
     });
+    return { items };
   }
 
   @Get('team-events/admin/events')
   @PunchAdminOnly()
-  listAdminEvents(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.eventRepo.find({
+  async listAdminEvents(@PunchCurrentUser() user: PunchAuthUser) {
+    const items = await this.eventRepo.find({
       where: { teamId: user.teamId },
       order: { eventAt: 'DESC' },
       take: 200,
     });
+    return { items };
   }
 
   @Post('team-events/admin/events')
@@ -293,7 +295,7 @@ export class PunchTeamOpsController implements OnModuleInit, OnModuleDestroy {
 
   @Get('team-ledger/admin/entries')
   @PunchAdminOnly()
-  listLedger(
+  async listLedger(
     @PunchCurrentUser() user: PunchAuthUser,
     @Query('from') rawFrom?: string,
     @Query('to') rawTo?: string,
@@ -325,11 +327,12 @@ export class PunchTeamOpsController implements OnModuleInit, OnModuleDestroy {
       if (!Number.isNaN(toDate.getTime())) qb.andWhere('e.occurred_at <= :to', { to: toDate });
     }
 
-    return qb
+    const items = await qb
       .orderBy('e.occurred_at', 'DESC')
       .addOrderBy('e.created_at', 'DESC')
       .take(limit)
       .getMany();
+    return { items };
   }
 
   @Post('team-ledger/admin/entries')
