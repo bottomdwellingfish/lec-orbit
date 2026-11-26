@@ -1,5 +1,14 @@
 /** LecPunch 今日专注主屏：Apple HIG 风格原生考勤计时卡片、网络白名单状态、本周考核与实时在岗伙伴。 */
-import { useEffect, useMemo, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { Avatar, Button, Card, Empty, Statistic, Switch, Tag } from '@lec-space/liquidglass';
 import { Clock3, Flame, RefreshCw, ShieldCheck, Trophy, Users } from '@lec-space/icons';
 import { Award, IdCard, Wifi } from 'lucide-react';
@@ -14,10 +23,26 @@ import { TitleBadgeList } from '@/components/TitleBadge';
 import { getOrbitClient } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
 import { useOrbitStore } from '@/stores/useOrbitStore';
-import { lazy, Suspense } from 'react';
 import styles from './PunchToday.module.css';
 
 const GlyphEmber = lazy(() => import('./GlyphEmber'));
+
+/** 跟随 Orbit 外观配置与系统深浅色解析当前生效主题，避免特效背景硬编码浅底。 */
+function useResolvedTheme(preference: 'system' | 'light' | 'dark'): 'light' | 'dark' {
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    setSystemDark(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  return preference === 'system' ? (systemDark ? 'dark' : 'light') : preference;
+}
 
 export function PunchTodayPage(): JSX.Element {
   const auth = useOrbitStore((s) => s.auth);
@@ -25,7 +50,8 @@ export function PunchTodayPage(): JSX.Element {
   const attendance = useOrbitStore((s) => s.attendance);
   const networkStatus = useOrbitStore((s) => s.networkStatus);
   const teamActive = useOrbitStore((s) => s.teamActive);
-  const frenzyActive = teamActive.length >= 8;
+  const frenzyActive = useOrbitStore((s) => s.feverActive);
+  const resolvedTheme = useResolvedTheme(config.theme);
   const weeklyStats = useOrbitStore((s) => s.weeklyStats);
   const points = useOrbitStore((s) => s.points);
   const myTitles = useOrbitStore((s) => s.myTitles);
@@ -248,15 +274,32 @@ export function PunchTodayPage(): JSX.Element {
 
       <section className={styles.heroGrid}>
         <Card className={styles.heroCard} padding="large">
-          {frenzyActive && config.frenzyFlamesEnabled && <Suspense fallback={null}>
-            <GlyphEmber className={styles.emberBackground} backgroundColor="#faf5ff" mode="ink" interactive={false} glyphSize={8.8} height={0.7 * 2 / 3} quality={0.8} />
-          </Suspense>}
+          {frenzyActive && config.frenzyFlamesEnabled && (
+            <Suspense fallback={null}>
+              <GlyphEmber
+                className={styles.emberBackground}
+                backgroundColor={resolvedTheme === 'dark' ? '#161b26' : '#faf5ff'}
+                mode={resolvedTheme === 'dark' ? 'glow' : 'ink'}
+                interactive={false}
+                glyphSize={8.8}
+                height={(0.7 * 2) / 3}
+                quality={0.8}
+              />
+            </Suspense>
+          )}
           <div className={styles.heroTop}>
             <div className={styles.punchBadges}>
-            <Tag tone={attendance?.isCheckedIn ? 'warning' : 'neutral'} icon={<Clock3 size={14} />}>
-              {attendance?.isCheckedIn ? '专注计时中' : '尚未签到'}
-            </Tag>
-            {frenzyActive && <Tag tone="warning" icon={<Flame size={14} />}>狂热打卡</Tag>}
+              <Tag
+                tone={attendance?.isCheckedIn ? (frenzyActive ? 'warning' : 'success') : 'neutral'}
+                icon={<Clock3 size={14} />}
+              >
+                {attendance?.isCheckedIn ? '专注计时中' : '尚未签到'}
+              </Tag>
+              {frenzyActive && (
+                <Tag tone="warning" icon={<Flame size={14} />}>
+                  狂热打卡
+                </Tag>
+              )}
             </div>
             <span className={styles.todayHint}>今日累计 {formatReadableDuration(todayTotalSeconds)}</span>
           </div>

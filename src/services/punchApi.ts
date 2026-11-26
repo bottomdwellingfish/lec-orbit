@@ -364,10 +364,14 @@ export const punchApi = {
     };
   },
 
-  async fetchTeamActive(): Promise<TeamActiveMember[]> {
+  async fetchTeamActiveSnapshot(): Promise<{
+    items: TeamActiveMember[];
+    isFever: boolean;
+    feverThreshold: number;
+  }> {
     const { data } = await client.get<unknown>(PUNCH_ENDPOINTS.teamActive);
     const raw = unwrapArray<Record<string, unknown>>(data, 'items');
-    return raw.map((item) => {
+    const items = raw.map((item) => {
       const realName = typeof item.realName === 'string' && item.realName.trim() ? item.realName.trim() : undefined;
       const nickname =
         typeof item.displayName === 'string' && item.displayName.trim() ? item.displayName.trim() : undefined;
@@ -402,6 +406,20 @@ export const punchApi = {
         titles: normalizeTitleBadges(item.titles),
       };
     });
+    // 优先消费后端返回的狂热判定字段与阈值，向下兼容未下发该字段的旧版服务端
+    const envelope = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+    const feverThreshold =
+      typeof envelope?.feverThreshold === 'number' && envelope.feverThreshold > 0
+        ? Math.floor(envelope.feverThreshold)
+        : 8;
+    const isFever =
+      typeof envelope?.isFever === 'boolean' ? envelope.isFever : items.length >= feverThreshold;
+    return { items, isFever, feverThreshold };
+  },
+
+  async fetchTeamActive(): Promise<TeamActiveMember[]> {
+    const snapshot = await this.fetchTeamActiveSnapshot();
+    return snapshot.items;
   },
 
   async fetchMyWeeklyStats(): Promise<MyWeeklyStats> {

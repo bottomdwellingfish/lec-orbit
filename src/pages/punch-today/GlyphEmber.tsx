@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  memo,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -916,8 +917,16 @@ const createEmber = (root: HTMLDivElement, settingsRef: { current: Settings }): 
     if (visible && !document.hidden && animating) raf = requestAnimationFrame(tick);
   };
 
+  function cancelLoop() {
+    if (raf) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
+  }
+
   function wake() {
-    if (destroyed || raf || !visible) return;
+    const settings = settingsRef.current;
+    if (destroyed || raf || !visible || document.hidden || settings.paused || settings.reduced) return;
     last = performance.now();
     raf = requestAnimationFrame(tick);
   }
@@ -999,12 +1008,14 @@ const createEmber = (root: HTMLDivElement, settingsRef: { current: Settings }): 
     (entries) => {
       visible = entries.some((entry) => entry.isIntersecting);
       if (visible) wake();
+      else cancelLoop();
     },
     { rootMargin: "80px" },
   );
   intersection.observe(root);
   const onVisibility = () => {
-    if (!document.hidden) wake();
+    if (document.hidden) cancelLoop();
+    else wake();
   };
   document.addEventListener("visibilitychange", onVisibility);
   const onLost = (event: Event) => event.preventDefault();
@@ -1013,7 +1024,14 @@ const createEmber = (root: HTMLDivElement, settingsRef: { current: Settings }): 
 
   return {
     sync: () => {
-      const ratio = Math.min(window.devicePixelRatio || 1, 2) * clamp(settingsRef.current.quality, 0.25, 1);
+      const settings = settingsRef.current;
+      // 页面隐藏（如最小化到托盘）或已暂停时立即停止动画循环，避免后台空耗核显与电量
+      if (settings.paused || settings.reduced || document.hidden || !visible) {
+        cancelLoop();
+        if (!document.hidden && visible) render();
+        return;
+      }
+      const ratio = Math.min(window.devicePixelRatio || 1, 2) * clamp(settings.quality, 0.25, 1);
       if (Math.abs(ratio - pixelRatio) > 1e-3) resize();
       else render();
       wake();
@@ -1043,7 +1061,7 @@ const createEmber = (root: HTMLDivElement, settingsRef: { current: Settings }): 
   };
 };
 
-const GlyphEmber = forwardRef<GlyphEmberHandle, GlyphEmberProps>(function GlyphEmber(
+const GlyphEmber = memo(forwardRef<GlyphEmberHandle, GlyphEmberProps>(function GlyphEmber(
   {
     colors = ["#7B3DFF", "#FF7AD9"],
     backgroundColor = "#0A0A0A",
@@ -1110,9 +1128,12 @@ const GlyphEmber = forwardRef<GlyphEmberHandle, GlyphEmberProps>(function GlyphE
     reduced,
   });
 
+  const colorPrimary = colors[0];
+  const colorSecondary = colors[1];
+
   useEffect(() => {
     settingsRef.current = {
-      colors,
+      colors: [colorPrimary, colorSecondary],
       backgroundColor,
       mode,
       charset,
@@ -1141,7 +1162,36 @@ const GlyphEmber = forwardRef<GlyphEmberHandle, GlyphEmberProps>(function GlyphE
       reduced,
     };
     controllerRef.current?.sync();
-  });
+  }, [
+    colorPrimary,
+    colorSecondary,
+    backgroundColor,
+    mode,
+    charset,
+    fontFamily,
+    glyphSize,
+    spacing,
+    height,
+    fuel,
+    turbulence,
+    wind,
+    flicker,
+    sparks,
+    smoke,
+    pulse,
+    speed,
+    glow,
+    intensity,
+    interactive,
+    snuff,
+    snuffRadius,
+    snuffStrength,
+    clickStoke,
+    stokeStrength,
+    paused,
+    quality,
+    reduced,
+  ]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -1171,7 +1221,7 @@ const GlyphEmber = forwardRef<GlyphEmberHandle, GlyphEmberProps>(function GlyphE
       {children && <div className="glyph-ember__content">{children}</div>}
     </div>
   );
-});
+}));
 
 GlyphEmber.displayName = "GlyphEmber";
 

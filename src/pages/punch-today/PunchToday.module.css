@@ -112,6 +112,10 @@
   opacity: 0.67;
 }
 
+:global([data-theme='dark']) .emberBackground > canvas {
+  opacity: 0.72;
+}
+
 .heroCard :is(.heroTop, .clockDisplay, .heroFooter) {
   position: relative;
   z-index: 1;

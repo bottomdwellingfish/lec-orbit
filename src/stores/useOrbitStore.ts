@@ -84,6 +84,9 @@ interface OrbitStoreState {
   attendance: AttendanceSnapshot | null;
   networkStatus: NetworkPolicyStatus | null;
   teamActive: TeamActiveMember[];
+  /** 狂热打卡状态与触发人数阈值（优先消费后端 /attendance/team-active 下发结果） */
+  feverActive: boolean;
+  feverThreshold: number;
   weeklyStats: MyWeeklyStats | null;
   records: AttendanceRecordItem[];
   points: PointsSummary | null;
@@ -211,6 +214,8 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
   attendance: null,
   networkStatus: null,
   teamActive: [],
+  feverActive: false,
+  feverThreshold: 8,
   weeklyStats: null,
   records: [],
   points: null,
@@ -371,6 +376,8 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         attendance: null,
         networkStatus: null,
         teamActive: [],
+        feverActive: false,
+        feverThreshold: 8,
         weeklyStats: null,
         records: [],
         points: null,
@@ -563,7 +570,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
       const results = await Promise.allSettled([
         punchApi.fetchAttendance(),
         punchApi.fetchNetworkStatus(),
-        punchApi.fetchTeamActive(),
+        punchApi.fetchTeamActiveSnapshot(),
         punchApi.fetchMyWeeklyStats(),
         punchApi.fetchMyRecords(30),
         punchApi.fetchPoints(),
@@ -662,7 +669,10 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         punchLoading: false,
         attendance: nextAttendance,
         networkStatus: nextNetwork,
-        teamActive: teamActive.status === 'fulfilled' ? teamActive.value : get().teamActive,
+        teamActive: teamActive.status === 'fulfilled' ? teamActive.value.items : get().teamActive,
+        feverActive: teamActive.status === 'fulfilled' ? teamActive.value.isFever : get().feverActive,
+        feverThreshold:
+          teamActive.status === 'fulfilled' ? teamActive.value.feverThreshold : get().feverThreshold,
         weeklyStats: nextWeekly,
         records: nextRecords,
         points: points.status === 'fulfilled' ? points.value : get().points,

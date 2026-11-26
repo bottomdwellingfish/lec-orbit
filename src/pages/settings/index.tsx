@@ -32,6 +32,7 @@ import styles from './Settings.module.css';
 export function SettingsPage(): JSX.Element {
   const auth = useOrbitStore((s) => s.auth);
   const config = useOrbitStore((s) => s.config);
+  const feverThreshold = useOrbitStore((s) => s.feverThreshold);
   const updateConfig = useOrbitStore((s) => s.updateConfig);
   const setAuthState = useOrbitStore((s) => s.setAuthState);
   const setLoginModalOpen = useOrbitStore((s) => s.setLoginModalOpen);
@@ -295,7 +296,9 @@ export function SettingsPage(): JSX.Element {
           <div className={styles.settingRow}>
             <div>
               <div className={styles.settingTitle}>狂热打卡符文火焰</div>
-              <div className={styles.settingDesc}>工作室同时在岗达到 8 人时显示火焰。关闭仅隐藏动画，不影响状态和积分加成。</div>
+              <div className={styles.settingDesc}>
+                工作室同时在岗达到 {feverThreshold} 人时显示火焰。关闭仅隐藏动画，不影响状态和积分加成。
+              </div>
             </div>
             <Switch aria-label="狂热打卡符文火焰" checked={config.frenzyFlamesEnabled} onCheckedChange={(checked) => void updateConfig({ frenzyFlamesEnabled: checked })} />
           </div>
