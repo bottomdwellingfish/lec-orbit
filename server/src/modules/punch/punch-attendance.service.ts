@@ -36,6 +36,7 @@ import {
   PUNCH_ERROR_CODES,
   weeklyGoalSeconds,
 } from './punch-shared.util.js';
+import { PunchTitlesService } from './punch-titles.service.js';
 import { PunchUsersService } from './punch-users.service.js';
 
 @Injectable()
@@ -53,6 +54,7 @@ export class PunchAttendanceService {
     private readonly networkPolicy: PunchNetworkPolicyService,
     private readonly pointsService: PunchPointsService,
     private readonly usersService: PunchUsersService,
+    private readonly titlesService: PunchTitlesService,
   ) {}
 
   private getElapsedSeconds(session: PunchAttendanceSessionEntity, now: Date): number {
@@ -102,7 +104,10 @@ export class PunchAttendanceService {
       }
     }
 
-    const members = await this.userRepo.find({ where: { teamId } });
+    const [members, titlesByUserId] = await Promise.all([
+      this.userRepo.find({ where: { teamId } }),
+      this.titlesService.getTeamDisplayTitlesByUserId(teamId).catch(() => undefined),
+    ]);
     const byId = new Map(members.map((m) => [m.id, m]));
 
     const items = live.map((s) => {
@@ -119,6 +124,7 @@ export class PunchAttendanceService {
         avatarEmoji: m?.avatarEmoji ?? undefined,
         enrollYear: m?.enrollYear ?? 0,
         equippedTitleId: m?.equippedTitleId ?? undefined,
+        titles: titlesByUserId?.get(s.userId) ?? [],
         checkInAt: s.checkInAt.toISOString(),
         elapsedSeconds: this.getElapsedSeconds(s, now),
       };
@@ -184,6 +190,7 @@ export class PunchAttendanceService {
       throw err;
     }
 
+    this.titlesService.invalidateTeamCache(user.teamId);
     return session;
   }
 
@@ -223,6 +230,8 @@ export class PunchAttendanceService {
       isValid: true,
       window: { start: session.checkInAt, end: now },
     });
+
+    this.titlesService.invalidateTeamCache(session.teamId);
 
     return {
       ...session,
@@ -420,6 +429,7 @@ export class PunchAttendanceService {
       }
       await manager.save(PunchAdjustmentBucketEntity, bucket);
 
+      this.titlesService.invalidateTeamCache(admin.teamId);
       return entry;
     });
   }

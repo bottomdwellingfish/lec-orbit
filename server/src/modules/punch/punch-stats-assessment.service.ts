@@ -30,6 +30,7 @@ import {
   comprehensiveDurationSeconds,
   weeklyGoalSeconds,
 } from './punch-shared.util.js';
+import { PunchTitlesService } from './punch-titles.service.js';
 import { PunchUsersService } from './punch-users.service.js';
 
 @Injectable()
@@ -47,6 +48,7 @@ export class PunchStatsAssessmentService {
     private readonly assessWeekRepo: Repository<PunchAssessmentWeekEntity>,
     private readonly usersService: PunchUsersService,
     private readonly economyLedger: EconomyLedgerService,
+    private readonly titlesService: PunchTitlesService,
   ) {}
 
   private async loadCardEntertainmentMap(
@@ -142,7 +144,7 @@ export class PunchStatsAssessmentService {
 
   async getTeamCurrentWeekRanking(teamId: string) {
     const weekKey = getShanghaiWeekKey(new Date());
-    const [members, recRows, adjRows, cardMap, tradeSummary] = await Promise.all([
+    const [members, recRows, adjRows, cardMap, tradeSummary, titlesByUserId] = await Promise.all([
       this.userRepo.find({ where: { teamId, status: 'active' } }),
       this.sessionRepo.query(
         `SELECT user_id AS "userId",
@@ -164,6 +166,7 @@ export class PunchStatsAssessmentService {
       ) as Promise<Array<{ userId: string; manualSeconds: number; adjustmentsCount: number }>>,
       this.loadCardEntertainmentMap(teamId, weekKey),
       this.economyLedger.getWeeklyTradeMinutesSummary(weekKey),
+      this.titlesService.getTeamDisplayTitlesByUserId(teamId).catch(() => undefined),
     ]);
 
     const recMap = new Map(recRows.map((r) => [r.userId, r]));
@@ -197,6 +200,7 @@ export class PunchStatsAssessmentService {
           avatarColor: m.avatarColor ?? undefined,
           avatarEmoji: m.avatarEmoji ?? undefined,
           equippedTitleId: m.equippedTitleId ?? undefined,
+          titles: titlesByUserId?.get(m.id) ?? [],
           cardCount: card?.cardCount ?? 0,
           recordedDurationSeconds: recorded,
           manualAdjustmentSeconds: manual,
