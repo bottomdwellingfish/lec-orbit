@@ -336,6 +336,18 @@ export function PunchTodayPage(): JSX.Element {
                   {networkStatus.scanError ||
                     networkStatus.reason ||
                     '请确认在工作室内并开启 Wi-Fi 开关（无需连接热点）'}
+                  {networkStatus.scanPermissionDenied && (
+                    <>
+                      {' '}
+                      <Button
+                        variant="glass"
+                        size="small"
+                        onClick={() => void getOrbitClient().system.openLocationSettings()}
+                      >
+                        打开系统定位设置
+                      </Button>
+                    </>
+                  )}
                 </span>
               )}
           </div>

@@ -3,6 +3,7 @@ import {
   aggregateWifiSamples,
   isLocallyAdministeredMac,
   normalizeBssid,
+  parseNativeWlanJson,
   parseNetshWlanOutput,
   parseNmcliWifiOutput,
   signalPercentToRssi,
@@ -128,5 +129,47 @@ SSID 1 : Lab-502
     // 非热点应排在热点之前
     expect(aggregated[0]?.isLikelyHotspot).toBe(false);
     expect(aggregated[aggregated.length - 1]?.isLikelyHotspot).toBe(true);
+  });
+
+  test('parseNativeWlanJson 解析 Windows wlanapi 原生 JSON 并识别定位权限与无网卡状态', () => {
+    const ok = parseNativeWlanJson(
+      JSON.stringify({
+        ok: true,
+        code: 0,
+        networks: [
+          { bssid: '10:20:30:40:50:61', ssid: 'Neighbor-Team', rssi: -68 },
+          { bssid: '10:20:30:40:50:61', ssid: 'Neighbor-Team', rssi: -63 },
+          { bssid: '00:00:00:00:00:00', ssid: 'Invalid', rssi: -50 },
+          { bssid: 'aa:bb:cc:dd:ee:ff', ssid: 'Campus-AP', rssi: -79 },
+        ],
+      }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(ok.samples).toEqual([
+      { bssid: '10:20:30:40:50:61', ssid: 'Neighbor-Team', rssi: -63 },
+      { bssid: 'aa:bb:cc:dd:ee:ff', ssid: 'Campus-AP', rssi: -79 },
+    ]);
+
+    const denied = parseNativeWlanJson(
+      JSON.stringify({ ok: false, code: 5, stage: 'bss', networks: [] }),
+    );
+    expect(denied.ok).toBe(false);
+    expect(denied.permissionDenied).toBe(true);
+    expect(denied.shouldFallback).toBeUndefined();
+
+    const noService = parseNativeWlanJson(
+      JSON.stringify({ ok: false, code: 1062, stage: 'open', networks: [] }),
+    );
+    expect(noService.ok).toBe(false);
+    expect(noService.error).toContain('WLAN AutoConfig');
+
+    const noIface = parseNativeWlanJson(
+      JSON.stringify({ ok: false, code: 0, stage: 'no_interface', networks: [] }),
+    );
+    expect(noIface.ok).toBe(false);
+    expect(noIface.error).toContain('Wi-Fi 网卡');
+
+    const malformed = parseNativeWlanJson('not-json');
+    expect(malformed.shouldFallback).toBe(true);
   });
 });

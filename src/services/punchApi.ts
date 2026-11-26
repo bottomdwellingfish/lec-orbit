@@ -40,11 +40,13 @@ function normalizePunchError(err: unknown): PunchApiError {
     const status = err.response?.status;
     const payload = err.response?.data as { message?: unknown; error?: unknown } | undefined;
     const serverMsg =
-      typeof payload?.message === 'string'
+      typeof payload?.message === 'string' && payload.message.trim()
         ? payload.message
         : Array.isArray(payload?.message)
           ? payload.message.join('；')
-          : undefined;
+          : typeof payload?.error === 'string' && payload.error.trim()
+            ? payload.error
+            : undefined;
     if (status === 401) {
       return new PunchApiError(serverMsg || '登录凭证已失效，请重新登录 LecSSO。', 401);
     }
@@ -74,6 +76,7 @@ export const PUNCH_ENDPOINTS = {
   attendanceCurrent: '/attendance/current',
   checkIn: '/attendance/check-in',
   checkOut: '/attendance/check-out',
+  keepAlive: '/attendance/keepalive',
   teamActive: '/attendance/team-active',
   networkStatus: '/network-policy/current-status',
   adminWifiFingerprint: '/network-policy/admin/wifi-fingerprint',
@@ -178,6 +181,7 @@ interface WifiScanPayloadSample {
 async function collectWifiScanForApi(force: boolean): Promise<{
   samples: WifiScanPayloadSample[];
   error?: string;
+  permissionDenied?: boolean;
 }> {
   try {
     const res = await getOrbitClient().system.scanWifi({ samples: 1, force });
@@ -191,6 +195,7 @@ async function collectWifiScanForApi(force: boolean): Promise<{
     return {
       samples,
       error: res.ok ? undefined : res.error,
+      permissionDenied: res.ok ? undefined : res.permissionDenied,
     };
   } catch (err) {
     return {
@@ -272,6 +277,63 @@ export const punchApi = {
     return this.fetchAttendance();
   },
 
+  async sendAttendanceKeepAlive(forceWifiScan = true): Promise<{
+    elapsedSeconds: number;
+    environment?: NetworkPolicyStatus;
+  }> {
+    const scan = await collectWifiScanForApi(forceWifiScan);
+    const { data } = await client.post<{
+      elapsedSeconds?: number;
+      environment?: {
+        isAllowed?: boolean;
+        allowed?: boolean;
+        ipAllowed?: boolean;
+        clientIp?: string;
+        reason?: string;
+        wifiFingerprintEnabled?: boolean;
+        wifiAllowed?: boolean;
+        matchedCount?: number;
+        requiredMatchCount?: number;
+        configuredAnchorCount?: number;
+      };
+    }>(
+      PUNCH_ENDPOINTS.keepAlive,
+      scan.samples.length > 0 ? { wifiScan: scan.samples } : {},
+    );
+
+    let environment: NetworkPolicyStatus | undefined;
+    if (data.environment) {
+      const env = data.environment;
+      const allowed = Boolean(env.isAllowed ?? env.allowed);
+      const wifiFingerprintEnabled = Boolean(env.wifiFingerprintEnabled);
+      environment = {
+        allowed,
+        ipAllowed: typeof env.ipAllowed === 'boolean' ? env.ipAllowed : allowed,
+        clientIp: env.clientIp,
+        reason:
+          env.reason ||
+          (allowed
+            ? undefined
+            : wifiFingerprintEnabled
+              ? scan.error || '未识别到工作室周边 Wi-Fi 环境指纹。'
+              : '当前出口网络未在工作室考勤白名单中。'),
+        wifiFingerprintEnabled,
+        wifiAllowed: typeof env.wifiAllowed === 'boolean' ? env.wifiAllowed : allowed,
+        matchedCount: typeof env.matchedCount === 'number' ? env.matchedCount : 0,
+        requiredMatchCount: typeof env.requiredMatchCount === 'number' ? env.requiredMatchCount : 0,
+        configuredAnchorCount:
+          typeof env.configuredAnchorCount === 'number' ? env.configuredAnchorCount : 0,
+        scanError: scan.samples.length === 0 ? scan.error : undefined,
+        scanPermissionDenied: scan.samples.length === 0 ? scan.permissionDenied : undefined,
+      };
+    }
+
+    return {
+      elapsedSeconds: Number(data.elapsedSeconds ?? 0),
+      environment,
+    };
+  },
+
   async fetchNetworkStatus(forceWifiScan = false): Promise<NetworkPolicyStatus> {
     const scan = await collectWifiScanForApi(forceWifiScan);
     try {
@@ -314,6 +376,7 @@ export const punchApi = {
         configuredAnchorCount:
           typeof data.configuredAnchorCount === 'number' ? data.configuredAnchorCount : 0,
         scanError: scan.samples.length === 0 ? scan.error : undefined,
+        scanPermissionDenied: scan.samples.length === 0 ? scan.permissionDenied : undefined,
       };
     } catch (err) {
       // 兼容尚未部署 POST /network-policy/current-status 的旧版后端

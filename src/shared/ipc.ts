@@ -339,6 +339,7 @@ export interface WifiScanResult {
   rounds: number;
   networks: ScannedWifiNetwork[];
   error?: string;
+  permissionDenied?: boolean;
 }
 
 export interface FloatingBallState extends TrayPunchSummary {
@@ -406,6 +407,7 @@ export interface OrbitBridge {
     notify: (title: string, body: string) => Promise<void>;
     updateTrayPunch: (summary: TrayPunchSummary) => Promise<void>;
     scanWifi: (options?: WifiScanOptions) => Promise<WifiScanResult>;
+    openLocationSettings: () => Promise<boolean>;
     getUpdateState: () => Promise<UpdateCheckResult>;
     checkUpdate: () => Promise<UpdateCheckResult>;
     downloadUpdate: () => Promise<UpdateCheckResult>;

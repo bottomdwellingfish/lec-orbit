@@ -243,7 +243,7 @@ export class PunchAttendanceService {
     };
   }
 
-  async keepAlive(user: PunchAuthUser) {
+  async keepAlive(user: PunchAuthUser, clientIp?: string, wifiScan?: WifiScanSample[]) {
     const session = await this.sessionRepo.findOne({
       where: { userId: user.userId, status: 'active' },
     });
@@ -254,15 +254,26 @@ export class PunchAttendanceService {
       });
     }
     const now = new Date();
-    if (await this.invalidateIfOvertime(session, now)) {
+    if (await this.invalidateIfOvertime(session, now, clientIp)) {
       throw new BadRequestException({
         code: PUNCH_ERROR_CODES.ATTENDANCE_SESSION_INVALIDATED,
         message: '本次打卡超过 5 小时上限已自动失效',
       });
     }
+
+    session.lastKeepaliveAt = now;
+    session.updatedAt = now;
+    await this.sessionRepo.save(session);
+
+    const environment =
+      clientIp !== undefined
+        ? await this.networkPolicy.evaluateAccess(user.teamId, clientIp, wifiScan)
+        : undefined;
+
     return {
       ...session,
       elapsedSeconds: this.getElapsedSeconds(session, now),
+      ...(environment ? { environment } : {}),
     };
   }
 
