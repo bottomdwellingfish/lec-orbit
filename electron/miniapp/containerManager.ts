@@ -665,6 +665,7 @@ export class MiniAppContainerManager {
 
     // ── Orbit 托管云函数 FaaS（方案 E）调用与 SSE 流式转发 IPC ──
 
+    const LOCAL_FN_DEV_URL = 'http://127.0.0.1:8787';
     const FN_NAME_SCHEMA = z
       .string()
       .trim()
@@ -673,6 +674,95 @@ export class MiniAppContainerManager {
       .string()
       .trim()
       .regex(/^[a-zA-Z0-9:_-]{1,64}$/, '无效的房间 ID');
+
+    /** 为本地调试请求构造当前真实成员身份头，并自动派发模拟 realtime 事件。 */
+    const buildDevUserHeader = (): string => {
+      const auth = this.deps.getAuthState();
+      const profile = auth.profile;
+      const userObj = {
+        userId: profile?.subject || 'dev-local-user',
+        username: profile?.username || 'dev',
+        displayName: profile?.name || profile?.username || '本地调试开发者',
+        isCaptain: auth.isAdmin,
+      };
+      return Buffer.from(JSON.stringify(userObj), 'utf8').toString('base64');
+    };
+
+    const forwardLocalDevRealtime = (appId: string, resp: Response) => {
+      const raw = resp.headers.get('x-orbit-dev-realtime');
+      if (!raw) return;
+      try {
+        const list = JSON.parse(Buffer.from(raw, 'base64').toString('utf8')) as Array<{
+          roomId?: string;
+          event?: string;
+          payload?: unknown;
+        }>;
+        if (!Array.isArray(list)) return;
+        for (const item of list) {
+          if (item?.event) {
+            this.dispatchRealtimeEvent({
+              appId,
+              roomId: item.roomId ?? null,
+              event: item.event,
+              payload: item.payload ?? null,
+              ts: Date.now(),
+            });
+          }
+        }
+      } catch {
+        // 忽略格式异常
+      }
+    };
+
+    const fetchCloudFunction = async (
+      inst: RunningMiniAppInstance,
+      fnName: string,
+      payload: unknown,
+      accept: string,
+      previewVersionId?: string,
+    ): Promise<Response> => {
+      const isLocalDevMode =
+        (inst.source === 'local-dir' || inst.source === 'dev-url') && !previewVersionId;
+      if (isLocalDevMode) {
+        try {
+          const resp = await fetch(`${LOCAL_FN_DEV_URL}/invoke/${encodeURIComponent(fnName)}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: accept,
+              'X-Orbit-Dev-User': buildDevUserHeader(),
+            },
+            body: JSON.stringify(payload ?? {}),
+          });
+          forwardLocalDevRealtime(inst.appId, resp);
+          return resp;
+        } catch {
+          throw new Error(
+            '本地云函数热调试服务未启动：请在终端运行 `bun run fn:dev -- <作品目录>`（监听 127.0.0.1:8787），或在调用 options 中传入 previewVersionId 联调线上预览版',
+          );
+        }
+      }
+
+      const token = await this.deps.getOrbitApiToken();
+      if (!token) throw new Error('尚未登录 Orbit，无法调用托管云函数');
+
+      const base = getOrbitEndpoints().orbitApiBase;
+      const qs = previewVersionId
+        ? `?previewVersionId=${encodeURIComponent(previewVersionId)}`
+        : '';
+      return fetch(
+        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/fn/${encodeURIComponent(fnName)}${qs}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: accept,
+          },
+          body: JSON.stringify(payload ?? {}),
+        },
+      );
+    };
 
     ipcMain.handle('orbit:sdk:cloud:call', async (event, rawInput) => {
       const inst = resolveCaller(event.sender.id);
@@ -687,24 +777,12 @@ export class MiniAppContainerManager {
         })
         .parse(rawInput);
 
-      const token = await this.deps.getOrbitApiToken();
-      if (!token) throw new Error('尚未登录 Orbit，无法调用托管云函数');
-
-      const base = getOrbitEndpoints().orbitApiBase;
-      const qs = input.previewVersionId
-        ? `?previewVersionId=${encodeURIComponent(input.previewVersionId)}`
-        : '';
-      const resp = await fetch(
-        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/fn/${encodeURIComponent(input.fnName)}${qs}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify(input.payload ?? {}),
-        },
+      const resp = await fetchCloudFunction(
+        inst,
+        input.fnName,
+        input.payload,
+        'application/json',
+        input.previewVersionId,
       );
 
       const contentType = resp.headers.get('content-type') || '';
@@ -738,24 +816,12 @@ export class MiniAppContainerManager {
         })
         .parse(rawInput);
 
-      const token = await this.deps.getOrbitApiToken();
-      if (!token) throw new Error('尚未登录 Orbit，无法调用流式云函数');
-
-      const base = getOrbitEndpoints().orbitApiBase;
-      const qs = input.previewVersionId
-        ? `?previewVersionId=${encodeURIComponent(input.previewVersionId)}`
-        : '';
-      const resp = await fetch(
-        `${base}/api/v1/apps/${encodeURIComponent(inst.appId)}/fn/${encodeURIComponent(input.fnName)}${qs}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream, application/json',
-          },
-          body: JSON.stringify(input.payload ?? {}),
-        },
+      const resp = await fetchCloudFunction(
+        inst,
+        input.fnName,
+        input.payload,
+        'text/event-stream, application/json',
+        input.previewVersionId,
       );
 
       if (!resp.ok) {
@@ -1126,7 +1192,7 @@ export class MiniAppContainerManager {
         crossOriginIsolated: Boolean(input.crossOriginIsolated),
       },
       permissions: {
-        scopes: ['user.profile', 'storage.cloud', 'clipboard'],
+        scopes: ['user.profile', 'storage.cloud', 'clipboard', 'cloud.functions', 'realtime.room'],
         networkDomains: [],
       },
     });

@@ -210,8 +210,35 @@ export default async function (_ctx: any, body: { moves: number[] }) {
 
 ---
 
-## 六、日志排查与调试
+## 六、本地热调试、可视化管理与日志排错
 
-- 云函数内调用 `console.log / warn / error` 会被自动采集（单次最多 32 条），按应用存入最近 200 条环形调用日志；
-- 作者与队长可通过 `GET /api/v1/apps/:appId/fn-logs` 查看每次调用的状态码、耗时与控制台日志；
-- 未上架的预览版本，作者与队长可在调用 `orbitSDK.cloud.call(fnName, payload, { previewVersionId })` 时指定预览版本 ID 进行线上真机联调。
+### 1. 本地热调试（无需每次打包上传）
+
+Orbit 仓库内置零依赖的本地云函数热调试工具 `sdk/orbit-fn-dev.ts`。开发阶段在终端启动它后，每次保存 `functions/*.ts` 下一次调用就会立即热重载生效：
+
+```bash
+# 在 apps/lec-orbit 目录下执行（传入你的作品根目录，默认监听 127.0.0.1:8787）
+bun run fn:dev -- /path/to/my-werewolf-app
+
+# 可选参数：自定义端口或指定本地密钥文件（默认读取作品目录下的 .env.local）
+bun run fn:dev -- /path/to/my-werewolf-app --port 8787 --env .env.local
+```
+
+本地热调试会自动为你打通：
+- **Orbit 容器自动直连**：当你用 Orbit 客户端「工坊 → 本地调试（本地目录 / Localhost 热重载）」运行作品时，`window.orbitSDK.cloud.call / stream` 会**自动转发到 `127.0.0.1:8787`**，无需改一行前端代码；
+- **完整底座模拟**：内存版 `ctx.roomState`（含 `update`）、`ctx.kv`、`.env.local` 注入 `ctx.secrets.get`、按 `networkDomains` 校验的 `ctx.fetch`、SSE 流式输出，连 `ctx.realtime.sendToUser / broadcastRoom` 也会自动回传给沙箱里的 `orbitSDK.realtime.onMessage`；
+- **上传前安全预检**：若源码误用了 `process.env`、`Deno.Command`、`eval` 等高危 API，终端会立即黄色高亮提醒「上传审核时将被拦截」。
+
+### 2. 工坊客户端可视化管理（加密 Secrets / 源码 / 日志）
+
+作品上传后（无论是 `preview` 体验版还是已上架正式版），**作品作者**可在 Orbit 客户端 **「工坊 → 我的作品」** 点击卡片上的 **「云函数管理」**，在一个原生弹窗里完成所有日常运维：
+
+- **源码审查**：查看该版本随包部署的路由列表、超时/流式配置、全部 `.ts/.js/.wasm` 文件体积与源码；
+- **加密密钥（Secrets）**：直接可视化新增、覆盖或删除加密环境变量（如 `DEEPSEEK_API_KEY`）。所有密钥均由服务端以 **AES-256-GCM 静态加密**存储，保存后永不回显明文（队长也仅可见变量名）；
+- **调用日志**：查看最近 50 次（服务端环形保留最近 200 次）云函数调用的 HTTP 状态码、耗时（ms）、错误信息以及你在函数内打印的 `console.log / warn / error`。
+
+### 3. 队长审核与线上预览版调试
+
+- **队长审源码**：包含云函数的版本提交正式上架后，队长在 **「工坊 → 待审核」** 卡片上会看到 **`云函数`** 徽章与 **「审云函数源码」** 按钮，可先审阅完整源码并试玩前端，确认安全后再批准上架；
+- **线上 `preview` 沙箱真机联调**：作者先上传一个 `preview` 通道包，并在前端调用 `orbitSDK.cloud.call(fnName, payload, { previewVersionId })` 即可直接跑在集群真实 `supabase/edge-runtime` 沙箱中验证效果。
+
