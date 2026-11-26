@@ -50,12 +50,13 @@ export function MyBlogDialog({ open, onOpenChange }: {
   onOpenChange: (open: boolean) => void;
 }): JSX.Element {
   const myBlog = useOrbitStore((state) => state.myBlog);
+  const blogPublicConfig = useOrbitStore((state) => state.blogPublicConfig);
   const setMyBlog = useOrbitStore((state) => state.setMyBlog);
   const refreshMemberBlogs = useOrbitStore((state) => state.refreshMemberBlogs);
+  const refreshBlogPublicConfig = useOrbitStore((state) => state.refreshBlogPublicConfig);
   const clearBlogTarget = useOrbitStore((state) => state.clearBlogTarget);
   const formId = useId();
   const [mode, setMode] = useState<BlogMode>('HOSTED');
-  const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [form, setForm] = useState<MyBlogForm>(EMPTY_FORM);
   const [tag, setTag] = useState('');
   const [tagError, setTagError] = useState<string | null>(null);
@@ -82,12 +83,11 @@ export function MyBlogDialog({ open, onOpenChange }: {
 
     void Promise.all([
       blogApi.getMyBlog(controller.signal),
-      blogApi.getPublicConfig(controller.signal).catch(() => null),
+      refreshBlogPublicConfig(),
     ])
       .then(([detail, config]) => {
         if (controller.signal.aborted) return;
         setMyBlog(detail);
-        setPublicUrl(config?.publicUrl ?? null);
         if (detail) {
           const currentMode: BlogMode = detail.blogMode === 'HOSTED' ? 'HOSTED' : 'EXTERNAL';
           setMode(currentMode);
@@ -114,7 +114,7 @@ export function MyBlogDialog({ open, onOpenChange }: {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [open, retry, setMyBlog]);
+  }, [open, retry, setMyBlog, refreshBlogPublicConfig]);
 
   function addTag(): boolean {
     const value = tag.trim();
@@ -157,7 +157,7 @@ export function MyBlogDialog({ open, onOpenChange }: {
           tags,
         });
         setMyBlog(saved);
-        const writeUrl = resolveBlogWriteUrl(publicUrl, saved.blogUrl);
+        const writeUrl = resolveBlogWriteUrl(blogPublicConfig?.publicUrl, saved.blogUrl);
         notifyToast({
           tone: 'success',
           title: wasHosted ? '托管博客已更新' : '工作室博客已开通',
@@ -248,7 +248,7 @@ export function MyBlogDialog({ open, onOpenChange }: {
 
   const hidden = myBlog?.status === 'HIDDEN';
   const fieldsDisabled = Boolean(busy) || hidden;
-  const hostedBase = (parseBlogUrl(publicUrl)?.href.replace(/\/+$/, '') ?? 'https://blog.lecspace.top');
+  const hostedBase = parseBlogUrl(blogPublicConfig?.publicUrl)?.href.replace(/\/+$/, '') ?? 'https://blog.lecspace.top';
   const submitLabel = mode === 'HOSTED' && myBlog?.blogMode !== 'HOSTED' ? '开通博客' : '保存';
 
   return (

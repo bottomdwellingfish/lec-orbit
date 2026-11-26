@@ -41,12 +41,14 @@ export function BlogHubPage(): JSX.Element {
   const auth = useOrbitStore((state) => state.auth);
   const memberBlogs = useOrbitStore((state) => state.memberBlogs);
   const myBlog = useOrbitStore((state) => state.myBlog);
+  const blogPublicConfig = useOrbitStore((state) => state.blogPublicConfig);
   const blogState = useOrbitStore((state) => state.blogState);
   const blogsLoading = useOrbitStore((state) => state.blogsLoading);
   const blogsError = useOrbitStore((state) => state.blogsError);
   const selectedBlogUserId = useOrbitStore((state) => state.selectedBlogUserId);
   const pendingBlogUrl = useOrbitStore((state) => state.pendingBlogUrl);
   const refreshMemberBlogs = useOrbitStore((state) => state.refreshMemberBlogs);
+  const refreshBlogPublicConfig = useOrbitStore((state) => state.refreshBlogPublicConfig);
   const setBlogState = useOrbitStore((state) => state.setBlogState);
   const setMyBlog = useOrbitStore((state) => state.setMyBlog);
   const openBlogTarget = useOrbitStore((state) => state.openBlogTarget);
@@ -64,7 +66,6 @@ export function BlogHubPage(): JSX.Element {
   const [hideTarget, setHideTarget] = useState<MemberBlogItem | null>(null);
   const [hiding, setHiding] = useState(false);
   const [hideError, setHideError] = useState<string | null>(null);
-  const [blogPublicUrl, setBlogPublicUrl] = useState<string | null>(null);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const desktop = isDesktopRuntime();
@@ -80,14 +81,8 @@ export function BlogHubPage(): JSX.Element {
   useEffect(() => {
     if (!canAccess) return;
     void refreshMemberBlogs();
-    const controller = new AbortController();
-    void blogApi.getPublicConfig(controller.signal)
-      .then((config) => {
-        if (!controller.signal.aborted) setBlogPublicUrl(config.publicUrl);
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [canAccess, auth.profile?.subject, refreshMemberBlogs]);
+    void refreshBlogPublicConfig();
+  }, [canAccess, auth.profile?.subject, refreshMemberBlogs, refreshBlogPublicConfig]);
 
   useEffect(() => {
     if (pendingBlogUrl) setMode('browse');
@@ -140,7 +135,7 @@ export function BlogHubPage(): JSX.Element {
   );
   const ownBlogPresent = Boolean(myBlog || memberBlogs.some((member) => member.userId === auth.profile?.subject));
   const ownHosted = myBlog?.blogMode === 'HOSTED' && myBlog.status !== 'HIDDEN';
-  const writeUrl = ownHosted ? resolveBlogWriteUrl(blogPublicUrl, myBlog.blogUrl) : null;
+  const writeUrl = ownHosted ? resolveBlogWriteUrl(blogPublicConfig?.publicUrl, myBlog.blogUrl) : null;
 
   function readPost(userId: string, url: string): void {
     setPostsAuthor(null);
