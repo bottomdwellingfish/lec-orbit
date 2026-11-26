@@ -1153,11 +1153,103 @@ export class AuthService {
     }
   }
 
-  /** 查询 lec-studio 工作室全体正式成员公开名片（脱敏，不含学号/手机/邮箱）。 */
+  /** 从 Orbit 后端 /api/v1/members 拉取全量已同步的工作室成员公开名片（含届别、角色与 GitHub/飞书公开绑定）。 */
+  private async fetchMembersFromOrbit(token: string): Promise<StudioMembersResult> {
+    const cfg = getOrbitEndpoints();
+    try {
+      const res = await fetch(`${cfg.orbitApiBase}/api/v1/members`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          items: [],
+          message: `获取工作室成员名片失败（HTTP ${res.status}）`,
+        };
+      }
+      const data = (await res.json()) as {
+        items?: Array<{
+          userId?: string;
+          username?: string;
+          displayName?: string;
+          avatar?: string;
+          isCaptain?: boolean;
+          enrollYear?: number | null;
+          roles?: string[];
+          social?: {
+            github?: {
+              username?: string | null;
+              name?: string | null;
+              avatar?: string | null;
+              profileUrl?: string | null;
+            } | null;
+            feishu?: {
+              name?: string | null;
+              enName?: string | null;
+              avatar?: string | null;
+              linked?: boolean;
+            } | null;
+          };
+        }>;
+      };
+      const raw = Array.isArray(data.items) ? data.items : [];
+      const items: StudioMemberCard[] = raw
+        .filter((m) => Boolean(m?.userId))
+        .map((m) => ({
+          id: String(m.userId),
+          username: m.username?.trim() || null,
+          name: m.displayName?.trim() || m.username?.trim() || null,
+          avatar: m.avatar?.trim() || null,
+          enrollYear: typeof m.enrollYear === 'number' ? m.enrollYear : null,
+          roles:
+            Array.isArray(m.roles) && m.roles.length > 0
+              ? m.roles
+              : m.isCaptain
+                ? ['captain']
+                : ['member'],
+          social: {
+            github: m.social?.github
+              ? {
+                  username: m.social.github.username ?? null,
+                  name: m.social.github.name ?? null,
+                  avatar: m.social.github.avatar ?? null,
+                  profileUrl: m.social.github.profileUrl ?? null,
+                }
+              : null,
+            feishu: m.social?.feishu
+              ? {
+                  name: m.social.feishu.name ?? null,
+                  enName: m.social.feishu.enName ?? null,
+                  avatar: m.social.feishu.avatar ?? null,
+                  linked: Boolean(m.social.feishu.linked),
+                }
+              : null,
+          },
+        }));
+      return { ok: true, items };
+    } catch (err) {
+      return {
+        ok: false,
+        items: [],
+        message: err instanceof Error ? err.message : '获取工作室成员列表失败，请检查网络连接。',
+      };
+    }
+  }
+
+  /** 查询 lec-studio 工作室全体正式成员公开名片（优先 Orbit 后端实时花名册，免去多余 404 往返）。 */
   async listStudioMembers(): Promise<StudioMembersResult> {
     const token = await this.getApiToken('orbit');
     if (!token) {
       return { ok: false, items: [], message: '登录状态已失效，请重新登录 LecSSO。' };
+    }
+    const orbitRes = await this.fetchMembersFromOrbit(token);
+    if (orbitRes.ok && orbitRes.items.length > 0) {
+      return orbitRes;
     }
     try {
       const cfg = getOrbitEndpoints();
@@ -1167,20 +1259,16 @@ export class AuthService {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json',
         },
+        signal: AbortSignal.timeout(10_000),
       });
-      if (res.status === 404) {
-        return {
-          ok: false,
-          items: [],
-          message: 'LecSSO 服务端成员名片接口正在更新中，稍后点击刷新即可加载完整名片。',
-        };
-      }
       if (!res.ok) {
-        return {
-          ok: false,
-          items: [],
-          message: await this.extractLogtoErrorMessage(res, '获取工作室成员列表失败'),
-        };
+        return orbitRes.ok
+          ? orbitRes
+          : {
+              ok: false,
+              items: [],
+              message: orbitRes.message || (await this.extractLogtoErrorMessage(res, '获取工作室成员列表失败')),
+            };
       }
       const data = (await res.json()) as { items?: unknown };
       const rawItems = Array.isArray(data.items) ? data.items : [];

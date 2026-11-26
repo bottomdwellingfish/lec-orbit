@@ -18,6 +18,7 @@ import {
   MiniAppDisplayModeSchema,
   MiniAppEngineSchema,
   MiniAppIdSchema,
+  MiniAppLaunchRoomContextSchema,
   MiniAppPermissionScopeSchema,
   MiniAppTypeSchema,
   OrbitAppManifestSchema,
@@ -395,6 +396,7 @@ function registerIpcHandlers(): void {
             iconUrl: z.string().optional(),
           })
           .optional(),
+        launchRoom: MiniAppLaunchRoomContextSchema.optional(),
       })
       .parse(raw);
     return miniAppContainerManager.launch(payload);

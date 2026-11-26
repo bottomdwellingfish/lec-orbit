@@ -1,5 +1,5 @@
 /**
- * @lec-space/orbit-sdk（v1.2.0）
+ * @lec-space/orbit-sdk（v1.3.0）
  * 面向 Orbit 工坊小程序（React/Vue/Vanilla）与 Cocos Creator 3.x 的标准 TypeScript SDK。
  * 在 Orbit 容器外（例如普通浏览器预览）自动提供本地 localStorage 降级实现。
  */
@@ -89,9 +89,73 @@ export interface OrbitNakamaSession {
   created: boolean;
 }
 
+export interface OrbitStudioMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  isCaptain: boolean;
+  /** 该同学此刻是否正在玩本游戏/本应用。 */
+  isPlayingThisApp: boolean;
+  /** 若该同学此刻正在玩其他工坊作品，返回作品名称，否则为 null。 */
+  playingAppName: string | null;
+  isSelf: boolean;
+}
+
+export interface OrbitRoomInviteInput {
+  /** 受邀工作室成员的 userId 列表（来自 listStudioMembers），单次 1~8 人。 */
+  toUserIds: string[];
+  /** 房间唯一标识（例如 Nakama match_id 或自定义房号）。 */
+  roomId: string;
+  /** 可选房间展示名称（如「快棋 1 号桌」）。 */
+  roomName?: string;
+  /** 可选自定义邀请附言（最长 140 字）。 */
+  message?: string;
+  /** 对方点击接受后优先以何种容器形态打开（默认沿用应用默认形态）。 */
+  mode?: OrbitDisplayMode;
+  /** 邀请有效期秒数（60~3600 秒，默认 600 秒）。 */
+  expiresInSeconds?: number;
+  /** 可选业务透传元数据（如地图、模式、密码等），接受进房时原样带回。 */
+  meta?: Record<string, unknown>;
+}
+
+export interface OrbitRoomInviteResult {
+  ok: true;
+  appId: string;
+  roomId: string;
+  expiresAt: string;
+  sent: Array<{ userId: string; displayName: string; inviteId: string }>;
+}
+
+export interface OrbitRoomJoinPayload {
+  inviteId: string;
+  appId: string;
+  roomId: string;
+  roomName?: string;
+  mode?: OrbitDisplayMode;
+  message?: string;
+  meta?: Record<string, unknown>;
+  inviter: {
+    userId: string;
+    username?: string;
+    displayName: string;
+    avatar?: string;
+  };
+  acceptedAt: string;
+}
+
 export interface OrbitMultiplayerAPI {
   /** 获取绑定当前工作室成员身份的 Nakama 联机会话（免前端管理 Server Key）。 */
   getNakamaSession: () => Promise<OrbitNakamaSession>;
+  /** 获取可邀请组队的工作室活跃成员列表（自动按在玩状态与届别排序）。 */
+  listStudioMembers?: (options?: { includeSelf?: boolean }) => Promise<OrbitStudioMember[]>;
+  /** 向工作室同学发送实时组队邀请，对方点击「接受并进房」即直达对应房间。 */
+  sendRoomInvite?: (input: OrbitRoomInviteInput) => Promise<OrbitRoomInviteResult>;
+  /** 获取冷启动时携带的直达房间上下文（无邀请直达则返回 null）。 */
+  getLaunchRoom?: () => Promise<OrbitRoomJoinPayload | null>;
+  /** 监听热进房或加载完成后的组队直达房间事件，返回取消订阅函数。 */
+  onRoomJoin?: (listener: (payload: OrbitRoomJoinPayload) => void) => () => void;
 }
 
 export interface OrbitCloudCallOptions {
@@ -151,7 +215,7 @@ export interface OrbitEnvInfo {
 }
 
 export interface OrbitSDK {
-  sdkVersion: '1.2.0' | '1.1.0' | '1.0.0';
+  sdkVersion: '1.3.0' | '1.2.0' | '1.1.0' | '1.0.0';
   isOrbit: boolean;
   env: {
     getInfo: () => Promise<OrbitEnvInfo>;
@@ -201,7 +265,7 @@ function createBrowserFallbackSDK(): OrbitSDK {
       : 'light';
 
   return {
-    sdkVersion: '1.2.0',
+    sdkVersion: '1.3.0',
     isOrbit: false,
     env: {
       getInfo: async () => ({
@@ -363,6 +427,63 @@ function createBrowserFallbackSDK(): OrbitSDK {
       getNakamaSession: async () => {
         throw new Error('浏览器独立预览环境无法直接换取工作室 Nakama 凭证，请在 Orbit 容器内运行');
       },
+      listStudioMembers: async () => [
+        {
+          userId: 'dev-teammate-1',
+          username: 'teammate1',
+          displayName: '测试队友 A',
+          avatar: '',
+          enrollYear: 2025,
+          isCaptain: false,
+          isPlayingThisApp: true,
+          playingAppName: document.title || 'Browser Preview',
+          isSelf: false,
+        },
+        {
+          userId: 'dev-teammate-2',
+          username: 'teammate2',
+          displayName: '测试队友 B',
+          avatar: '',
+          enrollYear: 2024,
+          isCaptain: false,
+          isPlayingThisApp: false,
+          playingAppName: null,
+          isSelf: false,
+        },
+      ],
+      sendRoomInvite: async (input) => {
+        console.info('[orbit-sdk:sendRoomInvite]', input);
+        return {
+          ok: true,
+          appId: 'browser-dev',
+          roomId: input.roomId,
+          expiresAt: new Date(Date.now() + (input.expiresInSeconds ?? 600) * 1000).toISOString(),
+          sent: input.toUserIds.map((userId, idx) => ({
+            userId,
+            displayName: `测试队友 ${idx + 1}`,
+            inviteId: `dev-invite-${Date.now().toString(36)}-${idx}`,
+          })),
+        };
+      },
+      getLaunchRoom: async () => {
+        if (typeof window === 'undefined') return null;
+        const params = new URLSearchParams(window.location.search);
+        const roomId = params.get('orbit_room');
+        if (!roomId) return null;
+        return {
+          inviteId: 'dev-url-invite',
+          appId: 'browser-dev',
+          roomId,
+          roomName: params.get('orbit_room_name') ?? undefined,
+          inviter: {
+            userId: 'dev-host',
+            username: 'host',
+            displayName: '本地调试房主',
+          },
+          acceptedAt: new Date().toISOString(),
+        };
+      },
+      onRoomJoin: () => () => undefined,
     },
     cloud: {
       call: async () => {

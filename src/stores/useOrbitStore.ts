@@ -17,6 +17,8 @@ import type {
   InstalledMiniAppRecord,
   MiniAppBuiltinItem,
   MiniAppCatalogItem,
+  MiniAppDisplayMode,
+  MiniAppLaunchRoomContext,
   MiniAppRuntimeSnapshot,
 } from '@shared/miniapp';
 import type {
@@ -42,6 +44,7 @@ import {
 } from '@/services/blogApi';
 import {
   orbitServerApi,
+  type ActiveHubPlayer,
   type OrbitAnnouncement,
   type OrbitNotificationItem,
   type OrbitWsEvent,
@@ -123,6 +126,7 @@ interface OrbitStoreState {
   hubBuiltins: MiniAppBuiltinItem[];
   hubInstalled: InstalledMiniAppRecord[];
   hubCatalog: MiniAppCatalogItem[];
+  hubPresence: ActiveHubPlayer[];
   hubLoading: boolean;
   hubError: string | null;
 
@@ -135,6 +139,7 @@ interface OrbitStoreState {
   setHubRuntime: (snapshot: MiniAppRuntimeSnapshot) => void;
   refreshHubLocal: () => Promise<void>;
   refreshHubData: () => Promise<void>;
+  refreshHubPresence: () => Promise<void>;
   setBlogState: (blogState: BlogViewState) => void;
   setMyBlog: (myBlog: MyBlogDetail | null) => void;
   openBlogTarget: (userId: string, url?: string) => void;
@@ -156,6 +161,8 @@ interface OrbitStoreState {
   refreshCardGame: (options?: { silent?: boolean }) => Promise<void>;
   setCardGame: (game: CardGameView) => void;
   refreshOrbitCenter: () => Promise<void>;
+  acceptHubRoomInvite: (notif: OrbitNotificationItem) => Promise<void>;
+  denyHubRoomInvite: (notif: OrbitNotificationItem) => Promise<void>;
   syncStaleData: (minIntervalMs?: number) => void;
   applyOrbitWsEvent: (event: OrbitWsEvent) => void;
   toggleCheckInOut: () => Promise<{ ok: boolean; message: string; status?: number }>;
@@ -225,7 +232,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
   networkStatus: null,
   teamActive: [],
   feverActive: false,
-  feverThreshold: 8,
+  feverThreshold: 12,
   weeklyStats: null,
   records: [],
   points: null,
@@ -247,6 +254,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
   hubBuiltins: [],
   hubInstalled: [],
   hubCatalog: [],
+  hubPresence: [],
   hubLoading: false,
   hubError: null,
 
@@ -315,6 +323,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     if (auth.authenticated) {
       void get().refreshPunchData();
       void get().refreshStudioMembers();
+      void get().refreshMemberBlogs();
       void get().refreshCardGame({ silent: true });
       void get().refreshOrbitCenter();
     }
@@ -387,7 +396,7 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         networkStatus: null,
         teamActive: [],
         feverActive: false,
-        feverThreshold: 8,
+        feverThreshold: 12,
         weeklyStats: null,
         records: [],
         points: null,
@@ -503,8 +512,11 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     try {
       await get().refreshHubLocal();
       if (get().auth.authenticated) {
-        const items = await orbitServerApi.listMiniApps();
-        set({ hubCatalog: items, hubLoading: false });
+        const [items, presence] = await Promise.all([
+          orbitServerApi.listMiniApps(),
+          orbitServerApi.listMiniAppPresence().catch(() => get().hubPresence),
+        ]);
+        set({ hubCatalog: items, hubPresence: presence, hubLoading: false });
       } else {
         set({ hubLoading: false });
       }
@@ -513,6 +525,16 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
         hubLoading: false,
         hubError: err instanceof Error ? err.message : '拉取线上工坊列表失败（本地示例仍可正常运行）',
       });
+    }
+  },
+
+  refreshHubPresence: async () => {
+    if (!get().auth.authenticated) return;
+    try {
+      const items = await orbitServerApi.listMiniAppPresence();
+      set({ hubPresence: items });
+    } catch {
+      // 忽略偶发刷新失败
     }
   },
 
@@ -567,15 +589,22 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     if (!force && get().studioMembers.length > 0) return;
 
     set({ studioMembersLoading: true, studioMembersError: null });
-    const res = await getOrbitClient().auth.listStudioMembers();
-    if (res.ok) {
-      set({ studioMembers: res.items, studioMembersLoading: false, studioMembersError: null });
-      return;
+    try {
+      const res = await getOrbitClient().auth.listStudioMembers();
+      if (res.ok) {
+        set({ studioMembers: res.items, studioMembersLoading: false, studioMembersError: null });
+        return;
+      }
+      set({
+        studioMembersLoading: false,
+        studioMembersError: res.message || '加载工作室成员名片失败。',
+      });
+    } catch (err) {
+      set({
+        studioMembersLoading: false,
+        studioMembersError: err instanceof Error ? err.message : '加载工作室成员名片失败。',
+      });
     }
-    set({
-      studioMembersLoading: false,
-      studioMembersError: res.message || '加载工作室成员名片失败。',
-    });
   },
 
   refreshNetworkStatus: async (forceWifiScan = false) => {
@@ -811,6 +840,163 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     }
   },
 
+  acceptHubRoomInvite: async (notif) => {
+    const payload = notif.payload ?? {};
+    const appId = typeof payload.appId === 'string' ? payload.appId.trim() : '';
+    const appName = (typeof payload.appName === 'string' ? payload.appName.trim() : '') || appId;
+    const roomId = typeof payload.roomId === 'string' ? payload.roomId.trim() : '';
+    const roomName = typeof payload.roomName === 'string' ? payload.roomName.trim() : undefined;
+    const message = typeof payload.message === 'string' ? payload.message.trim() : undefined;
+    const modeRaw = payload.mode;
+    const mode: MiniAppDisplayMode | undefined =
+      modeRaw === 'sidepanel' || modeRaw === 'workspace' || modeRaw === 'standalone'
+        ? modeRaw
+        : undefined;
+    const meta =
+      payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
+        ? (payload.meta as Record<string, unknown>)
+        : undefined;
+    const inviterId = typeof payload.inviterId === 'string' ? payload.inviterId.trim() : '';
+    const inviterUsername =
+      typeof payload.inviterUsername === 'string' ? payload.inviterUsername.trim() : undefined;
+    const inviterName =
+      (typeof payload.inviterName === 'string' ? payload.inviterName.trim() : '') || '工作室队友';
+    const inviterAvatar =
+      typeof payload.inviterAvatar === 'string' ? payload.inviterAvatar.trim() : undefined;
+
+    if (!appId || !roomId) {
+      notifyToast({
+        tone: 'error',
+        title: '无法加入房间',
+        description: '该组队邀请缺少应用或房间信息。',
+      });
+      return;
+    }
+
+    try {
+      // 1. 待处理状态先向服务端确认接受，校验有效期并通知房主
+      if (notif.actionStatus === 'pending') {
+        await orbitServerApi.handleNotificationAction(notif.id, 'approve');
+        set((s) => ({
+          orbitNotifications: s.orbitNotifications.map((n) =>
+            n.id === notif.id ? { ...n, actionStatus: 'approved', isRead: true } : n,
+          ),
+        }));
+      }
+
+      // 2. 自动解析应用包（内置示例 / 已缓存目录 / 线上最新上架版本，未安装会自动下载安装）
+      const state = get();
+      const isBuiltin = state.hubBuiltins.some((b) => b.appId === appId);
+      let remoteBundle:
+        | {
+            version: string;
+            bundleUrl: string;
+            bundleSha256: string;
+            bundleSize?: number;
+            manifest?: MiniAppCatalogItem['activeVersion'] extends infer V
+              ? V extends { manifest: infer M }
+                ? M
+                : never
+              : never;
+            iconUrl?: string;
+          }
+        | undefined;
+
+      if (!isBuiltin) {
+        let catalogItem: MiniAppCatalogItem | null =
+          state.hubCatalog.find((c) => c.id === appId) ?? null;
+        if (!catalogItem?.activeVersion) {
+          try {
+            catalogItem = await orbitServerApi.getMiniApp(appId);
+          } catch {
+            // 若线上不可达，允许回退到本地已安装缓存
+          }
+        }
+        const activeVer = catalogItem?.activeVersion;
+        if (activeVer) {
+          remoteBundle = {
+            version: activeVer.version,
+            bundleUrl: activeVer.bundleUrl,
+            bundleSha256: activeVer.bundleSha256,
+            bundleSize: activeVer.bundleSize,
+            manifest: activeVer.manifest,
+            iconUrl: catalogItem?.iconUrl || activeVer.iconUrl,
+          };
+        } else if (
+          !state.hubInstalled.some((i) => i.appId === appId) &&
+          !state.hubRuntime.apps.some((r) => r.appId === appId)
+        ) {
+          throw new Error(`未找到作品《${appName}》的可用版本，可能尚未正式发布或已下架`);
+        }
+      }
+
+      const launchRoom: MiniAppLaunchRoomContext = {
+        inviteId: notif.id,
+        appId,
+        roomId,
+        roomName: roomName || undefined,
+        mode,
+        message: message || undefined,
+        meta,
+        inviter: {
+          userId: inviterId || 'studio-member',
+          username: inviterUsername || undefined,
+          displayName: inviterName,
+          avatar: inviterAvatar || undefined,
+        },
+        acceptedAt: new Date().toISOString(),
+      };
+
+      const launched = await getOrbitClient().hub.launch({
+        appId,
+        mode,
+        remoteBundle,
+        launchRoom,
+      });
+
+      if (launched.mode === 'workspace') {
+        get().setActiveTab('hub');
+      }
+      void get().refreshHubLocal();
+      void get().refreshHubPresence();
+
+      notifyToast({
+        tone: 'success',
+        title: `正在进入《${launched.name || appName}》`,
+        description: `已连接 ${inviterName} 的房间：${roomName || roomId}`,
+      });
+    } catch (err) {
+      void get().refreshOrbitCenter();
+      notifyToast({
+        tone: 'error',
+        title: '接受组队邀请失败',
+        description: err instanceof Error ? err.message : '请稍后重试。',
+      });
+    }
+  },
+
+  denyHubRoomInvite: async (notif) => {
+    try {
+      await orbitServerApi.handleNotificationAction(notif.id, 'deny');
+      set((s) => ({
+        orbitNotifications: s.orbitNotifications.map((n) =>
+          n.id === notif.id ? { ...n, actionStatus: 'denied', isRead: true } : n,
+        ),
+      }));
+      notifyToast({
+        tone: 'info',
+        title: '已婉拒组队邀请',
+        description: '已将你的回复同步给发起邀请的队友。',
+      });
+    } catch (err) {
+      notifyToast({
+        tone: 'error',
+        title: '婉拒操作失败',
+        description: err instanceof Error ? err.message : '请稍后重试。',
+      });
+    }
+  },
+
   applyOrbitWsEvent: (event) => {
     const mySub = get().auth.profile?.subject;
     if (event.type === 'announcement.created') {
@@ -887,17 +1073,24 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
       if (isBlogEvent && get().auth.authenticated && (get().activeTab === 'blogs' || get().memberBlogs.length > 0)) {
         void get().refreshMemberBlogs();
       }
+      const isRoomInvite = notif.eventType === 'hub.room_invite';
       const blogTargetUrl = isBlogEvent ? parseBlogUrl(notif.payload?.postUrl ?? notif.payload?.blogUrl) : null;
       const blogAuthorId = typeof notif.payload?.userId === 'string' ? notif.payload.userId.trim() : '';
       void getOrbitClient().system.notify(notif.title, notif.body);
       notifyToast({
-        tone: notif.eventType === 'doc.edit_request' ? 'info' : 'success',
+        tone: notif.eventType === 'doc.edit_request' || isRoomInvite ? 'info' : 'success',
         title: notif.title,
         description: notif.body,
-        action: blogTargetUrl && blogAuthorId
-          ? { label: '前往阅读', onClick: () => get().openBlogTarget(blogAuthorId, blogTargetUrl.href) }
-          : { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
+        action: isRoomInvite
+          ? { label: '接受并进房', onClick: () => void get().acceptHubRoomInvite(notif) }
+          : blogTargetUrl && blogAuthorId
+            ? { label: '前往阅读', onClick: () => get().openBlogTarget(blogAuthorId, blogTargetUrl.href) }
+            : { label: '前往处理', onClick: () => get().setActiveTab('inbox') },
       });
+      return;
+    }
+    if (event.type === 'hub.presence.updated') {
+      void get().refreshHubPresence();
       return;
     }
     if (event.type === 'miniapp.realtime') {

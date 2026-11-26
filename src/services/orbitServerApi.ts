@@ -46,7 +46,7 @@ export interface OrbitNotificationItem {
   body: string;
   payload: Record<string, unknown>;
   targetUserId?: string;
-  actionStatus?: 'pending' | 'approved' | 'denied';
+  actionStatus?: 'pending' | 'approved' | 'denied' | 'expired';
   actionNote?: string;
   actionBy?: string;
   actionAt?: string;
@@ -90,6 +90,92 @@ export interface MiniAppFnLogEntry {
   createdAt: string;
 }
 
+export interface ActiveHubPlayer {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  appId: string;
+  appName: string;
+  appType: string;
+  appIconUrl: string;
+  startedAt: string;
+}
+
+export interface MiniAppReviewItem {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  score: number;
+  comment: string;
+  ratedAt: string;
+}
+
+export interface MiniAppPlayerStatItem {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: string;
+  enrollYear: number | null;
+  playCount: number;
+  totalDurationSeconds: number;
+  lastPlayedAt: string;
+  score: number | null;
+  comment: string;
+}
+
+export interface MiniAppDailyTrendPoint {
+  day: string;
+  plays: number;
+  uniquePlayers: number;
+}
+
+export interface MiniAppEngagementStats {
+  appId: string;
+  appName: string;
+  ownerId: string;
+  totalPlays: number;
+  uniquePlayers: number;
+  avgRating: number | null;
+  ratingCount: number;
+  activePlayers: ActiveHubPlayer[];
+  myPlayCount: number;
+  myRating: { score: number; comment: string; ratedAt: string } | null;
+  myRatingChances: number;
+  isOwner: boolean;
+  dailyRatingsRemaining: number;
+  dailyAppRatingsRemaining: number;
+  dailyMaxRatingsGlobal: number;
+  dailyMaxRatingsPerApp: number;
+  canViewPlayers: boolean;
+  dailyTrend?: MiniAppDailyTrendPoint[];
+  reviews: MiniAppReviewItem[];
+  players: MiniAppPlayerStatItem[];
+}
+
+export interface MiniAppLeaderboardItem {
+  rank: number;
+  appId: string;
+  name: string;
+  type: string;
+  engine: string;
+  iconUrl: string;
+  description: string;
+  ownerId: string;
+  ownerName: string;
+  totalPlays: number;
+  uniquePlayers: number;
+  avgRating: number | null;
+  ratingCount: number;
+  bayesianScore: number;
+  activePlayerCount: number;
+  myRatingChances: number;
+  myRatingScore: number | null;
+}
+
 export interface OrbitWsEvent {
   type:
     | 'announcement.created'
@@ -98,7 +184,8 @@ export interface OrbitWsEvent {
     | 'announcement.receipt'
     | 'notification.created'
     | 'notification.updated'
-    | 'miniapp.realtime';
+    | 'miniapp.realtime'
+    | 'hub.presence.updated';
   payload: Record<string, unknown>;
 }
 
@@ -329,6 +416,53 @@ export const orbitServerApi = {
 
   async recordMiniAppPlay(appId: string): Promise<void> {
     await client.post(`/api/v1/apps/${encodeURIComponent(appId)}/play`).catch(() => undefined);
+  },
+
+  async listMiniAppPresence(): Promise<ActiveHubPlayer[]> {
+    const { data } = await client.get<{ items: ActiveHubPlayer[] }>('/api/v1/apps/presence');
+    return data.items ?? [];
+  },
+
+  async getMiniAppLeaderboard(params?: {
+    sort?: 'composite' | 'rating' | 'plays';
+    type?: 'all' | 'minigame' | 'miniapp';
+  }): Promise<{ sort: 'composite' | 'rating' | 'plays'; items: MiniAppLeaderboardItem[] }> {
+    const { data } = await client.get<{
+      sort: 'composite' | 'rating' | 'plays';
+      items: MiniAppLeaderboardItem[];
+    }>('/api/v1/apps/leaderboard', {
+      params: {
+        ...(params?.sort ? { sort: params.sort } : {}),
+        ...(params?.type && params.type !== 'all' ? { type: params.type } : {}),
+      },
+    });
+    return { sort: data.sort ?? 'composite', items: data.items ?? [] };
+  },
+
+  async getMiniAppStats(appId: string): Promise<MiniAppEngagementStats> {
+    const { data } = await client.get<MiniAppEngagementStats>(
+      `/api/v1/apps/${encodeURIComponent(appId)}/stats`,
+    );
+    return data;
+  },
+
+  async rateMiniApp(
+    appId: string,
+    input: { score: number; comment?: string },
+  ): Promise<{
+    ok: true;
+    avgRating: number | null;
+    ratingCount: number;
+    myRating: { score: number; comment: string; ratedAt: string };
+    myRatingChances: number;
+    dailyRatingsRemaining: number;
+    dailyAppRatingsRemaining: number;
+  }> {
+    const { data } = await client.post(
+      `/api/v1/apps/${encodeURIComponent(appId)}/rate`,
+      input,
+    );
+    return data;
   },
 
   // ── 托管云函数 FaaS（源码审查 / 加密 Secrets / 调用日志）──

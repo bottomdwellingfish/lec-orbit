@@ -50,6 +50,9 @@ export default defineConfig({
       __ORBIT_WS_URL__: JSON.stringify(
         process.env.VITE_ORBIT_WS_URL || process.env.ORBIT_WS_URL || '',
       ),
+      __PUNCH_API_BASE__: JSON.stringify(
+        process.env.VITE_PUNCH_API_BASE || process.env.PUNCH_API_BASE || '',
+      ),
     },
     build: {
       rollupOptions: {

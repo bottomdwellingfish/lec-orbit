@@ -17,6 +17,7 @@ import {
 import { Search } from '@lec-space/icons';
 import {
   ArrowLeft,
+  BarChart3,
   Bug,
   CheckCircle2,
   Cloud,
@@ -29,10 +30,14 @@ import {
   Layers,
   PanelRight,
   Play,
+  Radio,
   RefreshCw,
   ShieldCheck,
+  Star,
   Trash2,
+  Trophy,
   Upload,
+  Users,
   X,
   XCircle,
 } from 'lucide-react';
@@ -47,10 +52,16 @@ import {
   type OrbitAppManifest,
   type RunningMiniAppState,
 } from '@shared/miniapp';
+import { MemberMention } from '@/components/MemberMention';
+import { MemberProfileDialog, type MemberProfileSeed } from '@/components/MemberProfileDialog';
 import { getOrbitClient, isDesktopRuntime } from '@/services/orbitClient';
-import { orbitServerApi } from '@/services/orbitServerApi';
+import { orbitServerApi, type MiniAppLeaderboardItem } from '@/services/orbitServerApi';
 import { notifyToast } from '@/services/orbitToast';
 import { useOrbitStore } from '@/stores/useOrbitStore';
+import {
+  MiniAppEngagementDialog,
+  type MiniAppEngagementTarget,
+} from './MiniAppEngagementDialog';
 import {
   MiniAppFunctionsDialog,
   type MiniAppFunctionsDialogTarget,
@@ -58,6 +69,8 @@ import {
 import styles from './Hub.module.css';
 
 type HubFilterTab = 'all' | 'miniapp' | 'minigame' | 'mine' | 'pending';
+type LeaderboardSort = 'composite' | 'rating' | 'plays';
+type LeaderboardTypeFilter = 'all' | 'minigame' | 'miniapp';
 type EngineFilter = 'all' | MiniAppEngine;
 
 type WorkshopWork = { appId: string; name: string };
@@ -80,6 +93,15 @@ function describeWorkshopAction(action: WorkshopAction): string {
   return action.type === 'withdraw'
     ? `撤回后，${build} 将移出待审核队列。你可以从「我的作品」重新送审或上传新版本。`
     : `将 ${build} 的原构建包提交给队长审核。`;
+}
+
+function formatPlayingAgo(iso: string): string {
+  const diffSec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  if (!Number.isFinite(diffSec) || diffSec < 60) return '刚刚开始';
+  const mins = Math.floor(diffSec / 60);
+  if (mins < 60) return `已玩 ${mins} 分钟`;
+  const hours = Math.floor(mins / 60);
+  return `已玩 ${hours} 小时 ${mins % 60} 分`;
 }
 
 function getPendingRelease(item?: MiniAppCatalogItem) {
@@ -231,10 +253,12 @@ export function HubPage(): JSX.Element {
   const hubBuiltins = useOrbitStore((s) => s.hubBuiltins);
   const hubInstalled = useOrbitStore((s) => s.hubInstalled);
   const hubCatalog = useOrbitStore((s) => s.hubCatalog);
+  const hubPresence = useOrbitStore((s) => s.hubPresence);
   const hubLoading = useOrbitStore((s) => s.hubLoading);
   const hubError = useOrbitStore((s) => s.hubError);
   const refreshHubData = useOrbitStore((s) => s.refreshHubData);
   const refreshHubLocal = useOrbitStore((s) => s.refreshHubLocal);
+  const refreshHubPresence = useOrbitStore((s) => s.refreshHubPresence);
   const pushOverlay = useOrbitStore((s) => s.pushOverlay);
   const popOverlay = useOrbitStore((s) => s.popOverlay);
 
@@ -281,13 +305,70 @@ export function HubPage(): JSX.Element {
 
   // 托管云函数工作台弹窗（源码审查 / Secrets / 日志）
   const [fnDialogTarget, setFnDialogTarget] = useState<MiniAppFunctionsDialogTarget | null>(null);
+  // 作品互动统计 & 评分弹窗（全员可看谁玩过）
+  const [engagementTarget, setEngagementTarget] = useState<MiniAppEngagementTarget | null>(null);
+  // 点击作者或玩家 Mention 弹出的工作室成员名片
+  const [profileSeed, setProfileSeed] = useState<MemberProfileSeed | null>(null);
+  // 排行榜状态
+  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSort>('composite');
+  const [leaderboardType, setLeaderboardType] = useState<LeaderboardTypeFilter>('all');
+  const [leaderboardItems, setLeaderboardItems] = useState<MiniAppLeaderboardItem[]>([]);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  const prevRunningCountRef = useRef<number>(hubRuntime.apps.length);
+
+  const loadLeaderboard = async (sort: LeaderboardSort, type: LeaderboardTypeFilter) => {
+    if (!auth.authenticated) return;
+    setLeaderboardLoading(true);
+    try {
+      const res = await orbitServerApi.getMiniAppLeaderboard({ sort, type });
+      setLeaderboardItems(res.items);
+    } catch {
+      // 忽略排行榜偶发错误
+    } finally {
+      setLeaderboardLoading(false);
+    }
+  };
 
   useEffect(() => {
     void refreshHubData();
-  }, [refreshHubData]);
+    void refreshHubPresence();
+    // 定期同步在线在玩状态，确保「此刻谁在玩」时长与人员实时准确
+    const timer = window.setInterval(() => {
+      void refreshHubPresence();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [refreshHubData, refreshHubPresence]);
+
+  // 右侧排行榜常驻展示，随排序维度或登录状态自动刷新
+  useEffect(() => {
+    void loadLeaderboard(leaderboardSort, leaderboardType);
+  }, [leaderboardSort, leaderboardType, auth.authenticated]);
+
+  // 监测本地运行中作品数变化：当有作品关闭结束一局后，自动刷新目录、在玩动态与右侧排行榜
+  useEffect(() => {
+    const prev = prevRunningCountRef.current;
+    const cur = hubRuntime.apps.length;
+    prevRunningCountRef.current = cur;
+    if (cur !== prev) {
+      const timer = window.setTimeout(() => {
+        void refreshHubPresence();
+        if (cur < prev) {
+          void refreshHubData();
+          void loadLeaderboard(leaderboardSort, leaderboardType);
+        }
+      }, 450);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [hubRuntime.apps.length, refreshHubData, refreshHubPresence, leaderboardSort, leaderboardType]);
 
   const dialogOpen =
-    devOpen || uploadOpen || workshopAction !== null || fnDialogTarget !== null;
+    devOpen ||
+    uploadOpen ||
+    workshopAction !== null ||
+    fnDialogTarget !== null ||
+    engagementTarget !== null ||
+    profileSeed !== null;
   useEffect(() => {
     if (!dialogOpen) return;
     pushOverlay();
@@ -407,14 +488,12 @@ export function HubPage(): JSX.Element {
             }
           : {}),
       });
-      if (!card.isBuiltin) {
-        void orbitServerApi.recordMiniAppPlay(card.appId);
-      }
       await refreshHubLocal();
+      void refreshHubPresence();
       notifyToast({
         tone: 'success',
         title: `已启动「${launched.name}」`,
-        description: `当前形态：${modeDisplayLabel(launched.mode)}（可随时一键无损切换）`,
+        description: `当前形态：${modeDisplayLabel(launched.mode)}（关闭后自动结算本局并获得评分机会）`,
       });
     } catch (err) {
       notifyToast({
@@ -785,30 +864,33 @@ export function HubPage(): JSX.Element {
         </div>
       </div>
 
-      <div className={styles.engineFilters}>
-        {(['all', 'web', 'cocos', 'unity', 'godot'] as EngineFilter[]).map((eng) => (
-          <button
-            key={eng}
-            type="button"
-            className={`${styles.filterChip} ${engineFilter === eng ? styles.filterChipActive : ''}`}
-            onClick={() => setEngineFilter(eng)}
-          >
-            {eng === 'all' ? '全部引擎' : engineDisplayLabel(eng)}
-          </button>
-        ))}
-      </div>
-
       {hubError && <Message tone="info">{hubError}</Message>}
 
-      {filteredCards.length === 0 ? (
-        <div className={styles.emptyWrap}>
-          <Empty
-            title="暂无符合条件的工坊作品"
-            description="点击右上角「本地调试」可直接运行本地小程序/小游戏目录，或点击「上传 / 导入」发布第一个作品。"
-          />
-        </div>
-      ) : (
-        <div className={styles.grid}>
+      {/* 高密度双栏布局：左侧作品列表 + 右侧常驻工坊排行榜 */}
+      <div className={styles.hubBoard}>
+        <div className={styles.hubCatalogCol}>
+          <div className={styles.engineFilters}>
+            {(['all', 'web', 'cocos', 'unity', 'godot'] as EngineFilter[]).map((eng) => (
+              <button
+                key={eng}
+                type="button"
+                className={`${styles.filterChip} ${engineFilter === eng ? styles.filterChipActive : ''}`}
+                onClick={() => setEngineFilter(eng)}
+              >
+                {eng === 'all' ? '全部引擎' : engineDisplayLabel(eng)}
+              </button>
+            ))}
+          </div>
+
+          {filteredCards.length === 0 ? (
+            <div className={styles.emptyWrap}>
+              <Empty
+                title="暂无符合条件的工坊作品"
+                description="点击右上角「本地调试」可直接运行本地小程序/小游戏目录，或点击「上传 / 导入」发布第一个作品。"
+              />
+            </div>
+          ) : (
+            <div className={styles.grid}>
           {filteredCards.map((card) => {
             const pendingVersion = getPendingRelease(card.catalogItem);
             const isMyWork = tab === 'mine' && card.catalogItem?.ownerId === auth.profile?.subject;
@@ -875,12 +957,85 @@ export function HubPage(): JSX.Element {
                 </p>
 
                 <div className={styles.cardMeta}>
-                  <span>{card.ownerName || '工作室成员'}</span>
+                  {!card.isBuiltin && card.catalogItem ? (
+                    <MemberMention
+                      name={card.ownerName || '工作室成员'}
+                      avatar={card.catalogItem.ownerAvatar || undefined}
+                      size="small"
+                      onSelectMember={setProfileSeed}
+                    />
+                  ) : (
+                    <span>{card.ownerName || '工作室成员'}</span>
+                  )}
                   <span>
                     默认：{modeDisplayLabel(card.defaultMode)}
                     {card.installedSizeBytes ? ` · ${formatBytesCompact(card.installedSizeBytes)}` : ''}
                   </span>
                 </div>
+
+                {!card.isBuiltin && card.catalogItem && (
+                  <div className={styles.cardEngagementRow}>
+                    <button
+                      type="button"
+                      className={`${styles.ratingChip} ${
+                        (card.catalogItem.myRatingChances ?? 0) > 0 ? styles.ratingChipReady : ''
+                      }`}
+                      onClick={() =>
+                        setEngagementTarget({
+                          appId: card.appId,
+                          name: card.name,
+                          initialTab: 'reviews',
+                        })
+                      }
+                    >
+                      <Star size={11} fill="currentColor" />
+                      <span>
+                        {card.catalogItem.avgRating !== null && card.catalogItem.avgRating !== undefined
+                          ? `${card.catalogItem.avgRating.toFixed(1)} (${card.catalogItem.ratingCount ?? 0})`
+                          : '暂无评分'}
+                      </span>
+                      {(card.catalogItem.myRatingChances ?? 0) > 0 && (
+                        <span className={styles.rateReadyTag}>可评分</span>
+                      )}
+                    </button>
+
+                    <span className={styles.playMetaPill}>
+                      <Users size={11} /> {card.catalogItem.uniquePlayers ?? 0}人 · {card.catalogItem.playCount ?? 0}局
+                    </span>
+
+                    {(() => {
+                      const liveHere = hubPresence.filter((p) => p.appId === card.appId);
+                      const liveCount = liveHere.length || card.catalogItem?.activePlayerCount || 0;
+                      if (liveCount <= 0) return null;
+                      const label =
+                        liveHere.length === 1
+                          ? `${liveHere[0]!.displayName} 在玩`
+                          : liveHere.length > 1
+                            ? `${liveHere[0]!.displayName} 等 ${liveHere.length} 人在玩`
+                            : `${liveCount} 人在玩`;
+                      return (
+                        <span className={styles.liveChip} title={liveHere.map((p) => p.displayName).join('、')}>
+                          <span className={styles.liveDot} />
+                          {label}
+                        </span>
+                      );
+                    })()}
+
+                    <button
+                      type="button"
+                      className={styles.statsLinkBtn}
+                      onClick={() =>
+                        setEngagementTarget({
+                          appId: card.appId,
+                          name: card.name,
+                          initialTab: 'players',
+                        })
+                      }
+                    >
+                      <BarChart3 size={11} /> 数据趋势
+                    </button>
+                  </div>
+                )}
 
                 {canOpen && <div className={styles.cardActions}>
                   <Button
@@ -1031,7 +1186,203 @@ export function HubPage(): JSX.Element {
             );
           })}
         </div>
-      )}
+          )}
+        </div>
+
+        {/* 右栏：常驻「此刻谁在玩」实时动态 + 「工坊排行榜」 */}
+        <div className={styles.hubRightCol}>
+          <section className={styles.hubPresencePanel} aria-label="此刻谁在玩">
+            <div className={styles.lbPanelHead}>
+              <div className={styles.lbPanelTitle}>
+                <Radio size={14} className={styles.presenceTitleIcon} />
+                <span>此刻谁在玩</span>
+              </div>
+              <span className={`${styles.presenceCountPill} ${hubPresence.length > 0 ? styles.presenceCountActive : ''}`}>
+                {hubPresence.length} 人在玩
+              </span>
+            </div>
+
+            {hubPresence.length === 0 ? (
+              <div className={styles.presenceEmpty}>
+                当前暂无同学在玩 · 打开任意作品后会在这里实时显示「谁正在玩什么」
+              </div>
+            ) : (
+              <ul className={styles.presenceCardList}>
+                {hubPresence.map((p) => {
+                  const targetCard = unifiedCards.find((c) => c.appId === p.appId);
+                  return (
+                    <li key={`${p.userId}:${p.appId}`} className={styles.presenceCardRow}>
+                      <span className={styles.presenceAvatarMd} aria-hidden="true">
+                        {p.avatar ? (
+                          <img src={p.avatar} alt="" className={styles.presenceAvatarImg} />
+                        ) : (
+                          Array.from(p.displayName)[0]?.toLocaleUpperCase() || '?'
+                        )}
+                        <span className={styles.presenceOnlineDot} />
+                      </span>
+                      <div className={styles.presenceRowMeta}>
+                        <div className={styles.presenceRowTop}>
+                          <MemberMention
+                            handle={p.username || undefined}
+                            name={p.displayName}
+                            avatar={p.avatar || undefined}
+                            size="small"
+                            onSelectMember={setProfileSeed}
+                          />
+                          <span className={styles.presenceVerb}>正在玩</span>
+                          <strong className={styles.presenceAppLink}>《{p.appName}》</strong>
+                        </div>
+                        <span className={styles.presenceTime}>{formatPlayingAgo(p.startedAt)}</span>
+                      </div>
+                      {targetCard && (
+                        <button
+                          type="button"
+                          className={styles.presenceJoinBtn}
+                          onClick={() => void handleLaunchCard(targetCard)}
+                        >
+                          一起玩
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          <aside className={styles.hubLeaderboardAside} aria-label="工坊排行榜">
+          <div className={styles.lbPanelHead}>
+            <div className={styles.lbPanelTitle}>
+              <Trophy size={15} />
+              <span>工坊排行榜</span>
+            </div>
+            <div className={styles.lbMiniTabs}>
+              {(
+                [
+                  { id: 'all', label: '全部' },
+                  { id: 'minigame', label: '游戏' },
+                  { id: 'miniapp', label: '应用' },
+                ] as Array<{ id: LeaderboardTypeFilter; label: string }>
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`${styles.lbMiniChip} ${
+                    leaderboardType === opt.id ? styles.lbMiniChipActive : ''
+                  }`}
+                  onClick={() => setLeaderboardType(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.lbSortRow}>
+            {(
+              [
+                { id: 'composite', label: '综合推荐' },
+                { id: 'rating', label: '最高评分' },
+                { id: 'plays', label: '最多人玩' },
+              ] as Array<{ id: LeaderboardSort; label: string }>
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`${styles.lbSortBtn} ${
+                  leaderboardSort === opt.id ? styles.lbSortBtnActive : ''
+                }`}
+                onClick={() => setLeaderboardSort(opt.id)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {leaderboardLoading && leaderboardItems.length === 0 ? (
+            <div className={styles.lbEmpty}>正在加载排行榜…</div>
+          ) : leaderboardItems.length === 0 ? (
+            <div className={styles.lbEmpty}>暂无上榜作品，游玩并评分后自动展示</div>
+          ) : (
+            <ol className={styles.lbCompactList}>
+              {leaderboardItems.map((item) => {
+                const targetCard = unifiedCards.find((c) => c.appId === item.appId);
+                const medalClass =
+                  item.rank === 1
+                    ? styles.rankGold
+                    : item.rank === 2
+                      ? styles.rankSilver
+                      : item.rank === 3
+                        ? styles.rankBronze
+                        : '';
+                return (
+                  <li key={item.appId} className={styles.lbCompactRow}>
+                    <button
+                      type="button"
+                      className={styles.lbRowMainBtn}
+                      onClick={() =>
+                        setEngagementTarget({
+                          appId: item.appId,
+                          name: item.name,
+                          initialTab: 'players',
+                        })
+                      }
+                      title="点击查看游玩趋势、热力图与谁玩过"
+                    >
+                      <span className={`${styles.rankNum} ${medalClass}`}>{item.rank}</span>
+                      <div className={styles.lbIconSm}>
+                        {item.iconUrl ? (
+                          <img src={item.iconUrl} alt="" className={styles.cardIconImg} />
+                        ) : item.type === 'minigame' ? (
+                          <Gamepad2 size={14} />
+                        ) : (
+                          <Layers size={14} />
+                        )}
+                      </div>
+                      <div className={styles.lbCompactInfo}>
+                        <div className={styles.lbCompactTitleRow}>
+                          <strong className={styles.lbCompactName}>{item.name}</strong>
+                          {item.activePlayerCount > 0 && (
+                            <span className={styles.liveChip}>
+                              <span className={styles.liveDot} />
+                              {item.activePlayerCount}
+                            </span>
+                          )}
+                          {item.myRatingChances > 0 && (
+                            <span className={styles.rateReadyTag}>可评</span>
+                          )}
+                        </div>
+                        <div className={styles.lbCompactMeta}>
+                          <span className={styles.lbRatingInline}>
+                            <Star size={10} fill="currentColor" />
+                            {item.avgRating !== null ? item.avgRating.toFixed(1) : '暂无'}
+                            {item.ratingCount > 0 ? ` (${item.ratingCount})` : ''}
+                          </span>
+                          <span>
+                            {item.uniquePlayers}人 · {item.totalPlays}局
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                    {targetCard && (
+                      <button
+                        type="button"
+                        className={styles.lbQuickPlayBtn}
+                        disabled={launchingId === item.appId}
+                        title={`打开《${item.name}》`}
+                        onClick={() => void handleLaunchCard(targetCard)}
+                      >
+                        <Play size={12} fill="currentColor" />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </aside>
+        </div>
+      </div>
 
       <Dialog
         open={workshopAction !== null}
@@ -1305,6 +1656,15 @@ export function HubPage(): JSX.Element {
         target={fnDialogTarget}
         onClose={() => setFnDialogTarget(null)}
       />
+      <MiniAppEngagementDialog
+        target={engagementTarget}
+        onClose={() => setEngagementTarget(null)}
+        onRated={() => {
+          void refreshHubData();
+          void loadLeaderboard(leaderboardSort, leaderboardType);
+        }}
+      />
+      <MemberProfileDialog seed={profileSeed} onClose={() => setProfileSeed(null)} />
     </div>
   );
 }
