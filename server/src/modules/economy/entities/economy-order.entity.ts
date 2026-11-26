@@ -5,6 +5,7 @@ export type EconomyOrderType = 'escrow_wager' | 'p2p_tip' | 'bounty_escrow' | 'p
 export type EconomyOrderStatus =
   | 'pending_accept'
   | 'locked'
+  | 'disputed'
   | 'settled'
   | 'refunded'
   | 'cancelled'

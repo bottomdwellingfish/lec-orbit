@@ -51,7 +51,7 @@ export interface OrbitOrderTicket {
   asset: OrbitEconomyAsset;
   amount: number;
   weekKey: string;
-  status: 'pending_accept' | 'locked' | 'settled' | 'refunded' | 'cancelled' | 'expired';
+  status: 'pending_accept' | 'locked' | 'disputed' | 'settled' | 'refunded' | 'cancelled' | 'expired';
   creatorUserId: string;
   opponentUserId?: string;
   winnerUserId?: string;

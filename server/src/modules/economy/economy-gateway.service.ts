@@ -33,8 +33,11 @@ import { EconomyOrderParticipantEntity } from './entities/economy-order-particip
 import { EconomyLedgerService } from './economy-ledger.service.js';
 import {
   evaluateParticipantRisk,
+  type AdminResolveOrderInput,
   type CreateWagerInput,
   type EconomyOrderDTO,
+  type InternalDisputeWagerInput,
+  type InternalSettleWagerInput,
   type IssueCredentialInput,
   type SettleWagerS2SInput,
   type TipCoinInput,
@@ -89,16 +92,20 @@ export class EconomyGatewayService {
     }
 
     const cred = await manager.findOne(MiniAppCredentialEntity, { where: { appId: app.id } });
+    // 若队长已显式吊销凭证则一律拒绝；若未单独签发 S2S 凭证，已过审声明了对应 scope 的应用可直接走 Nakama 通用赌约房
+    if (cred && cred.status === 'revoked') {
+      throw new ForbiddenException('该工坊应用的交易权限已被队长吊销');
+    }
     if (requireActiveCredential) {
       if (!cred || cred.status !== 'active') {
         throw new ForbiddenException('队长尚未为该工坊应用签发有效交易凭证或凭证已吊销');
       }
-      if (asset && !cred.allowedAssets.includes(asset)) {
-        throw new ForbiddenException(`该工坊应用未被授权使用 ${asset} 资产`);
-      }
+    }
+    if (cred && cred.status === 'active' && asset && !cred.allowedAssets.includes(asset)) {
+      throw new ForbiddenException(`该工坊应用未被授权使用 ${asset} 资产`);
     }
 
-    return { app, credential: cred };
+    return { app, credential: cred && cred.status === 'active' ? cred : null };
   }
 
   /** 统计同一对成员在指定时间窗内的同资产托管对局次数（防串通高频互刷）。 */
@@ -162,14 +169,14 @@ export class EconomyGatewayService {
         appId,
         requiredScope,
         input.asset,
-        true,
+        false,
       );
 
-      // 校验单笔上限（取平台硬上限与应用专属上限的较小值）
+      // 校验单笔上限（若存在应用专属凭证则取平台与专属上限较小值，否则取平台安全默认值）
       const maxPerOrder =
         input.asset === 'coin'
-          ? Math.min(ec.maxCoinPerOrder, credential!.maxCoinPerOrder)
-          : Math.min(ec.maxPunchPerOrder, credential!.maxPunchPerOrder);
+          ? Math.min(ec.maxCoinPerOrder, credential?.maxCoinPerOrder ?? ec.maxCoinPerOrder)
+          : Math.min(ec.maxPunchPerOrder, credential?.maxPunchPerOrder ?? ec.maxPunchPerOrder);
 
       // 校验发起方风控额度
       const metrics = await this.ledger.getUserRiskMetrics(manager, user.userId, weekKey, now);
@@ -355,13 +362,13 @@ export class EconomyGatewayService {
         appId,
         requiredScope,
         target.asset,
-        true,
+        false,
       );
 
       const maxPerOrder =
         target.asset === 'coin'
-          ? Math.min(ec.maxCoinPerOrder, credential!.maxCoinPerOrder)
-          : Math.min(ec.maxPunchPerOrder, credential!.maxPunchPerOrder);
+          ? Math.min(ec.maxCoinPerOrder, credential?.maxCoinPerOrder ?? ec.maxCoinPerOrder)
+          : Math.min(ec.maxPunchPerOrder, credential?.maxPunchPerOrder ?? ec.maxPunchPerOrder);
 
       // 校验应战方风控额度与同对手频次
       const metrics = await this.ledger.getUserRiskMetrics(
@@ -649,21 +656,132 @@ export class EconomyGatewayService {
       throw new UnauthorizedException('检测到重复的 X-Orbit-Nonce，已拒绝重放请求');
     }
 
+    return this.executeWagerSettleCore({
+      orderId: params.orderId,
+      expectedAppId: appId,
+      expectedMatchId: params.body.matchId,
+      result: params.body.result,
+      winnerUserId: params.body.winnerUserId,
+      summary: params.body.summary,
+      allowDisputed: false,
+    });
+  }
+
+  // ── 内部服务（Nakama 通用赌约房插件）核验、结算与争议挂起 ──
+
+  /** 内部服务读取单笔托管赌约单详情（供 Nakama 建房前校验双方身份与 locked 状态）。 */
+  async getWagerInternal(orderId: string): Promise<EconomyOrderDTO> {
+    const order = await this.dataSource.getRepository(EconomyOrderEntity).findOne({
+      where: { id: orderId },
+    });
+    if (!order) {
+      throw new NotFoundException('托管赌约单不存在');
+    }
+    const participants = await this.dataSource
+      .getRepository(EconomyOrderParticipantEntity)
+      .find({ where: { orderId: order.id } });
+    return this.toOrderDTO(order, participants);
+  }
+
+  /** 内部服务（如 Nakama 通用赌约房插件）触发原子结算，免外部 App Secret。 */
+  async settleWagerInternal(
+    orderId: string,
+    input: InternalSettleWagerInput,
+  ): Promise<EconomyOrderDTO> {
+    return this.executeWagerSettleCore({
+      orderId,
+      expectedAppId: input.appId,
+      expectedMatchId: input.matchId,
+      result: input.result,
+      winnerUserId: input.winnerUserId,
+      summary: input.summary,
+      allowDisputed: false,
+    });
+  }
+
+  /** 内部服务标记双方上报冲突，挂起该笔订单并推送双方等待队长裁决。 */
+  async disputeWagerInternal(
+    orderId: string,
+    input: InternalDisputeWagerInput,
+  ): Promise<EconomyOrderDTO> {
+    const now = new Date();
+    const { order, participants, notifyUsers } = await this.dataSource.transaction(
+      async (manager) => {
+        const qb = manager
+          .createQueryBuilder(EconomyOrderEntity, 'o')
+          .setLock('pessimistic_write')
+          .where('o.id = :id', { id: orderId });
+        if (input.appId) {
+          qb.andWhere('o.app_id = :appId', { appId: input.appId });
+        }
+        const target = await qb.getOne();
+        if (!target) {
+          throw new NotFoundException('托管赌约单不存在');
+        }
+        const parts = await manager.find(EconomyOrderParticipantEntity, {
+          where: { orderId: target.id },
+        });
+
+        // 幂等：已处于争议态或已终态则直接返回
+        if (
+          target.status === 'disputed' ||
+          target.status === 'settled' ||
+          target.status === 'refunded'
+        ) {
+          return { order: target, participants: parts, notifyUsers: [] as string[] };
+        }
+        if (target.status !== 'locked') {
+          throw new ConflictException(`托管单当前状态（${target.status}）不可进入争议态`);
+        }
+
+        target.status = 'disputed';
+        target.summary = input.reason.slice(0, 200);
+        target.updatedAt = now;
+        await manager.save(EconomyOrderEntity, target);
+
+        return {
+          order: target,
+          participants: parts,
+          notifyUsers: parts.map((p) => p.userId),
+        };
+      },
+    );
+
+    const dto = this.toOrderDTO(order, participants);
+    for (const uid of notifyUsers) {
+      void this.hub.pushToUser(uid, { type: 'economy.order.disputed', payload: dto });
+    }
+    return dto;
+  }
+
+  /** 共享的原子结算核心事务（S2S、Nakama 内部结算、队长后台裁决统一走此零和事务）。 */
+  private async executeWagerSettleCore(params: {
+    orderId: string;
+    expectedAppId?: string;
+    expectedMatchId?: string;
+    result: 'win' | 'draw' | 'refund';
+    winnerUserId?: string;
+    summary?: string;
+    allowDisputed: boolean;
+  }): Promise<EconomyOrderDTO> {
     const now = new Date();
     const currentWeekKey = getShanghaiWeekKey(now);
 
     const { order, participants, notifyUsers } = await this.dataSource.transaction(
       async (manager) => {
-        const target = await manager
+        const qb = manager
           .createQueryBuilder(EconomyOrderEntity, 'o')
           .setLock('pessimistic_write')
-          .where('o.id = :id AND o.app_id = :appId', { id: params.orderId, appId })
-          .getOne();
+          .where('o.id = :id', { id: params.orderId });
+        if (params.expectedAppId) {
+          qb.andWhere('o.app_id = :appId', { appId: params.expectedAppId });
+        }
+        const target = await qb.getOne();
 
         if (!target) {
           throw new NotFoundException('托管赌约单不存在或不属于当前应用');
         }
-        if (target.externalMatchId !== params.body.matchId) {
+        if (params.expectedMatchId && target.externalMatchId !== params.expectedMatchId) {
           throw new BadRequestException('结算请求 matchId 与托管单不匹配');
         }
 
@@ -675,7 +793,9 @@ export class EconomyGatewayService {
         if (target.status === 'settled' || target.status === 'refunded') {
           return { order: target, participants: parts, notifyUsers: [] as string[] };
         }
-        if (target.status !== 'locked') {
+        const canSettle =
+          target.status === 'locked' || (params.allowDisputed && target.status === 'disputed');
+        if (!canSettle) {
           throw new ConflictException(`托管单当前状态（${target.status}）不可结算`);
         }
 
@@ -684,14 +804,14 @@ export class EconomyGatewayService {
           target.asset === 'punch_minutes' && target.weekKey !== currentWeekKey;
         const isRefund =
           crossWeekPunch ||
-          params.body.result === 'draw' ||
-          params.body.result === 'refund' ||
-          !params.body.winnerUserId;
+          params.result === 'draw' ||
+          params.result === 'refund' ||
+          !params.winnerUserId;
 
         if (isRefund) {
           const reasonText = crossWeekPunch
             ? '跨考核周自动流局退还'
-            : params.body.summary || '和棋/流局自动退还';
+            : params.summary || '和棋/流局自动退还';
           await this.refundOrderTx(manager, target, parts, 'refunded', reasonText, now);
           return {
             order: target,
@@ -700,8 +820,8 @@ export class EconomyGatewayService {
           };
         }
 
-        const winnerPart = parts.find((p) => p.userId === params.body.winnerUserId);
-        const loserPart = parts.find((p) => p.userId !== params.body.winnerUserId);
+        const winnerPart = parts.find((p) => p.userId === params.winnerUserId);
+        const loserPart = parts.find((p) => p.userId !== params.winnerUserId);
         if (!winnerPart || !loserPart) {
           throw new BadRequestException('胜者必须是本局已锁定的参与成员之一');
         }
@@ -730,7 +850,7 @@ export class EconomyGatewayService {
         await manager.save(EconomyOrderParticipantEntity, [winnerPart, loserPart]);
 
         target.status = 'settled';
-        target.summary = params.body.summary ?? '';
+        target.summary = params.summary ?? '';
         target.settledAt = now;
         target.updatedAt = now;
         await manager.save(EconomyOrderEntity, target);
@@ -849,7 +969,50 @@ export class EconomyGatewayService {
     }));
   }
 
-  /** 队长强制仲裁流局退款（处理小游戏服务端宕机或恶意判负等异常订单）。 */
+  /** 队长查看全部处于争议挂起（disputed）状态的托管赌约单，便于后台仲裁。 */
+  async listDisputedOrders(limit = 50): Promise<EconomyOrderDTO[]> {
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
+    const orderRows = await this.dataSource.getRepository(EconomyOrderEntity).find({
+      where: { status: 'disputed' },
+      order: { updatedAt: 'DESC' },
+      take: safeLimit,
+    });
+    if (orderRows.length === 0) return [];
+    const orderIds = orderRows.map((o) => o.id);
+    const allParts = await this.dataSource
+      .getRepository(EconomyOrderParticipantEntity)
+      .createQueryBuilder('p')
+      .where('p.order_id IN (:...ids)', { ids: orderIds })
+      .getMany();
+    const byOrder = new Map<string, EconomyOrderParticipantEntity[]>();
+    for (const p of allParts) {
+      const list = byOrder.get(p.orderId) ?? [];
+      list.push(p);
+      byOrder.set(p.orderId, list);
+    }
+    return orderRows.map((o) => this.toOrderDTO(o, byOrder.get(o.id) ?? []));
+  }
+
+  /** 队长仲裁锁定或争议订单（可判某方胜、平局或流局退款）。 */
+  async adminResolveOrder(
+    captain: AuthUser,
+    orderId: string,
+    input: AdminResolveOrderInput,
+  ): Promise<EconomyOrderDTO> {
+    const actor = captain.displayName || captain.username || captain.userId;
+    const summary = input.note?.trim()
+      ? `队长仲裁（${actor}）：${input.note.trim()}`
+      : `队长仲裁（${actor}）`;
+    return this.executeWagerSettleCore({
+      orderId,
+      result: input.result,
+      winnerUserId: input.winnerUserId,
+      summary,
+      allowDisputed: true,
+    });
+  }
+
+  /** 队长强制仲裁流局退款（处理小游戏服务端宕机、争议或恶意判负等异常订单）。 */
   async adminForceRefund(orderId: string, note: string): Promise<EconomyOrderDTO> {
     const now = new Date();
     const { order, participants } = await this.dataSource.transaction(async (manager) => {
@@ -862,7 +1025,11 @@ export class EconomyGatewayService {
       if (!target) {
         throw new NotFoundException('订单不存在');
       }
-      if (target.status !== 'pending_accept' && target.status !== 'locked') {
+      if (
+        target.status !== 'pending_accept' &&
+        target.status !== 'locked' &&
+        target.status !== 'disputed'
+      ) {
         throw new ConflictException(`订单当前状态为 ${target.status}，无法强制解冻`);
       }
 

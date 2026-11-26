@@ -198,6 +198,76 @@ Nakama 官方提供全引擎客户端 SDK，在 Orbit WebGL 容器中接入同�
 
 ---
 
+## 第四步：零服务端接入「真乐币 / 真打卡时长」对赌房（方案 F）
+
+如果你的联机小游戏希望支持 **真乐币（`coin`）或真打卡时长（`punch_minutes`）约战对赌**，现在**同样无需自建服务端、无需申请 `App Secret`**！
+
+Orbit 已在 Nakama 内核挂载了平台通用赌约房插件（`orbit_wager_bridge`）：
+- **只需过审 Manifest**：在 `orbit.manifest.json` 的 `permissions.scopes` 中声明 `"economy.wager.coin"`（或 `"economy.wager.punch"`），队长审核上架后自动生效；
+- **一单一房自动配对**：双方先通过 `orbitSDK.economy.wager.create / accept` 完成锁仓拿到 `orderId`，然后**双方各自调用同一个 Nakama RPC `orbit_create_wager_match`**，系统自动核验身份并把两人送进同一个权威房间；
+- **业务帧原样透传**：房间内 OpCode `1 ~ 8999` 照常实时转发给对手，零改造成本；
+- **全自动结算与防赖账**：
+  - 正常结束：双方客户端向房间发 OpCode `9001` 上报胜负/平局，**一致即秒结划账**；
+  - 主动认输：发送 OpCode `9002`，**立即判对方胜并结算**；
+  - 中途拔网线 / 强杀进程：双方均曾进房后，若一方掉线超过宽限期（默认 30 秒，允许重连取消倒计时），**房间自动判在场方胜并结算**；
+  - 恶意冲突上报：若双方报的结果不一致，订单自动进入 `disputed` 争议挂起并推给队长后台裁决。
+
+### 完整接入示例（20 行代码零服务端结算）
+
+```ts
+const OP_GAME_MOVE = 1;        // 1 ~ 8999：你的游戏自由协议，原样广播给对手
+const OP_REPORT_RESULT = 9001; // 平台保留：双方上报本局结果（共识结算）
+const OP_SURRENDER = 9002;     // 平台保留：主动认输（秒判对方胜）
+const OP_WAGER_EVENT = 9003;   // 平台保留：房间推送赌约生命周期事件
+
+// 1. 双方先通过 Orbit SDK 建单并应战（status === 'locked'）
+// 发起方：const order = await sdk.economy!.wager.create({ asset: 'coin', amount: 10, matchId, title: '象棋约战' });
+// 应战方：const order = await sdk.economy!.wager.accept(orderId);
+
+// 2. 双方均用同一个 orderId 调用平台 RPC，自动创建或复用同一对赌房
+const rpcRes = await client.rpc(session, 'orbit_create_wager_match', {
+  orderId: order.orderId,
+  disconnectGraceSeconds: 30, // 掉线宽限期（10~120 秒，默认 30）
+});
+const { matchId } = rpcRes.payload as { matchId: string };
+const match = await socket.joinMatch(matchId);
+
+// 3. 监听对手业务帧 & 平台结算广播
+const decoder = new TextDecoder();
+socket.onmatchdata = (data) => {
+  const payload = JSON.parse(decoder.decode(data.data));
+  if (data.op_code === OP_WAGER_EVENT) {
+    // payload.event 可能为：matched / opponent_disconnected / opponent_reconnected /
+    // result_reported / settled / disputed
+    console.log('[赌约房事件]', payload);
+    return;
+  }
+  if (data.op_code === OP_GAME_MOVE) {
+    applyOpponentMove(payload);
+  }
+};
+
+// 4. 分出胜负时，双方前端各自上报结果（result 可为 'win' | 'draw' | 'refund'）
+async function reportWinner(winnerOrbitUserId: string) {
+  await socket.sendMatchState(
+    match.match_id,
+    OP_REPORT_RESULT,
+    JSON.stringify({
+      result: 'win',
+      winnerOrbitUserId, // 必须是双方 Orbit userId 之一
+      summary: '红方将死获胜',
+    }),
+  );
+}
+
+// 5. 主动认输：只需发空载荷到 9002
+async function surrender() {
+  await socket.sendMatchState(match.match_id, OP_SURRENDER, '');
+}
+```
+
+---
+
 ## 命名空间隔离与最佳实践
 
 由于全工作室的工坊小游戏共用同一套 Nakama 集群，强烈建议遵循以下约定，避免多款游戏之间数据串扰：

@@ -32,6 +32,31 @@ export const SettleWagerS2SSchema = z.object({
 });
 export type SettleWagerS2SInput = z.infer<typeof SettleWagerS2SSchema>;
 
+/** 内部服务（如 Nakama 通用赌约房插件）触发赌约结算的请求结构。 */
+export const InternalSettleWagerSchema = z.object({
+  appId: z.string().trim().min(1).max(64).optional(),
+  matchId: z.string().trim().min(1).max(64).optional(),
+  result: z.enum(['win', 'draw', 'refund']),
+  winnerUserId: z.string().trim().max(64).optional(),
+  summary: z.string().trim().max(200).optional(),
+});
+export type InternalSettleWagerInput = z.infer<typeof InternalSettleWagerSchema>;
+
+/** 内部服务（如 Nakama 通用赌约房插件）标记双方上报冲突进入争议仲裁的请求结构。 */
+export const InternalDisputeWagerSchema = z.object({
+  appId: z.string().trim().min(1).max(64).optional(),
+  reason: z.string().trim().min(1, '请提供争议原因').max(200),
+});
+export type InternalDisputeWagerInput = z.infer<typeof InternalDisputeWagerSchema>;
+
+/** 队长后台裁决锁定/争议赌约单的请求结构（判胜、平局或流局退款）。 */
+export const AdminResolveOrderSchema = z.object({
+  result: z.enum(['win', 'draw', 'refund']),
+  winnerUserId: z.string().trim().max(64).optional(),
+  note: z.string().trim().max(200).optional(),
+});
+export type AdminResolveOrderInput = z.infer<typeof AdminResolveOrderSchema>;
+
 export const IssueCredentialSchema = z.object({
   allowedAssets: z.array(EconomyAssetSchema).min(1, '至少授权一种资产'),
   maxCoinPerOrder: z.number().int().min(1).max(500).default(50),

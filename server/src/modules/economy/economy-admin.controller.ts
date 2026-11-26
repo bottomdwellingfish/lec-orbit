@@ -24,7 +24,7 @@ import { SsoAuthGuard } from '../../common/guards/sso-auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { EconomyGatewayService } from './economy-gateway.service.js';
 import { EconomyLedgerService } from './economy-ledger.service.js';
-import { IssueCredentialSchema } from './economy.types.js';
+import { AdminResolveOrderSchema, IssueCredentialSchema } from './economy.types.js';
 
 const UuidSchema = z.string().uuid('无效的订单 ID');
 
@@ -68,6 +68,23 @@ export class EconomyAdminController {
   @HttpCode(HttpStatus.OK)
   revokeCredential(@Param('appId') appId: string) {
     return this.gateway.revokeCredential(appId.trim());
+  }
+
+  @Get('orders/disputed')
+  async listDisputedOrders() {
+    const items = await this.gateway.listDisputedOrders();
+    return { items };
+  }
+
+  @Post('orders/:orderId/resolve')
+  @HttpCode(HttpStatus.OK)
+  resolveOrder(
+    @CurrentUser() captain: AuthUser,
+    @Param('orderId') orderId: string,
+    @Body() rawBody: unknown,
+  ) {
+    const input = AdminResolveOrderSchema.parse(rawBody ?? {});
+    return this.gateway.adminResolveOrder(captain, UuidSchema.parse(orderId.trim()), input);
   }
 
   @Post('orders/:orderId/refund')
