@@ -26,6 +26,7 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Gamepad2,
   GitCommitHorizontal,
   GitCompareArrows,
   Globe,
@@ -215,6 +216,8 @@ export function InboxPage(): JSX.Element {
   const refreshStudioMembers = useOrbitStore((s) => s.refreshStudioMembers);
   const setActiveTab = useOrbitStore((s) => s.setActiveTab);
   const openBlogTarget = useOrbitStore((s) => s.openBlogTarget);
+  const acceptHubRoomInvite = useOrbitStore((s) => s.acceptHubRoomInvite);
+  const denyHubRoomInvite = useOrbitStore((s) => s.denyHubRoomInvite);
 
   const [activeChannel, setActiveChannel] = useState<ChannelKey>('ALL');
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -723,6 +726,24 @@ export function InboxPage(): JSX.Element {
               <ul className={styles.list}>
                 {visibleNotifications.map((item) => {
                   const isDocRequest = item.eventType === 'doc.edit_request';
+                  const isRoomInvite = item.eventType === 'hub.room_invite';
+                  const roomLabel = isRoomInvite
+                    ? (typeof item.payload?.roomName === 'string' && item.payload.roomName.trim()) ||
+                      (typeof item.payload?.roomId === 'string' && item.payload.roomId.trim()) ||
+                      ''
+                    : '';
+                  const inviterName =
+                    typeof item.payload?.inviterName === 'string'
+                      ? item.payload.inviterName
+                      : undefined;
+                  const inviterUsername =
+                    typeof item.payload?.inviterUsername === 'string'
+                      ? item.payload.inviterUsername
+                      : undefined;
+                  const inviterAvatar =
+                    typeof item.payload?.inviterAvatar === 'string'
+                      ? item.payload.inviterAvatar
+                      : undefined;
                   const pageUrl =
                     typeof item.payload?.pageUrl === 'string' ? item.payload.pageUrl : undefined;
                   const blogUrl = item.sourceApp === 'lec-blog' ? parseBlogUrl(item.payload?.postUrl ?? item.payload?.blogUrl) : null;
@@ -757,6 +778,14 @@ export function InboxPage(): JSX.Element {
                       roleLabel: c.roleLabel,
                     });
                   }
+                  if (inlineMentions.length === 0 && (inviterName || inviterUsername)) {
+                    inlineMentions.push({
+                      handle: inviterUsername,
+                      name: inviterName,
+                      avatar: inviterAvatar,
+                      roleLabel: '邀请人',
+                    });
+                  }
                   if (inlineMentions.length === 0 && (requesterName || requesterUsername)) {
                     inlineMentions.push({
                       handle: requesterUsername,
@@ -765,9 +794,12 @@ export function InboxPage(): JSX.Element {
                     });
                   }
 
+                  const needsPendingAction =
+                    (isDocRequest || isRoomInvite) && item.actionStatus === 'pending';
+
                   const openNotifDetail = () => {
                     setViewingNotif(item);
-                    if (!item.isRead && !item.legacyPunch && (!isDocRequest || item.actionStatus !== 'pending')) {
+                    if (!item.isRead && !item.legacyPunch && !needsPendingAction) {
                       void handleMarkOrbitNotifRead(item.id);
                     }
                   };
@@ -794,12 +826,18 @@ export function InboxPage(): JSX.Element {
                             {activeChannel === 'ALL' && (
                               <Tag tone="info">{sourceTagLabel(item.sourceApp)}</Tag>
                             )}
+                            {roomLabel && <span className={styles.shaPill}>房间 {roomLabel}</span>}
                             {release.isRelease && release.shortSha && (
                               <span className={styles.shaPill}>{release.shortSha}</span>
                             )}
                             {!item.isRead && <span className={styles.unreadDot} title="未读" />}
-                            {item.actionStatus === 'approved' && <Tag tone="success">已同意</Tag>}
-                            {item.actionStatus === 'denied' && <Tag tone="danger">已拒绝</Tag>}
+                            {item.actionStatus === 'approved' && (
+                              <Tag tone="success">{isRoomInvite ? '已接受' : '已同意'}</Tag>
+                            )}
+                            {item.actionStatus === 'denied' && (
+                              <Tag tone="danger">{isRoomInvite ? '已婉拒' : '已拒绝'}</Tag>
+                            )}
+                            {item.actionStatus === 'expired' && <Tag tone="neutral">已过期</Tag>}
                           </div>
                           <p className={styles.itemBody}>{displayBody}</p>
                           <div className={styles.itemMetaRow}>
@@ -824,6 +862,52 @@ export function InboxPage(): JSX.Element {
                       </div>
 
                       <div className={styles.itemActions}>
+                        {isRoomInvite && item.actionStatus === 'pending' && (
+                          <>
+                            <Button
+                              variant="filled"
+                              size="small"
+                              icon={<Gamepad2 size={14} />}
+                              loading={busyActionId === `${item.id}:join`}
+                              disabled={Boolean(busyActionId)}
+                              onClick={() => {
+                                setBusyActionId(`${item.id}:join`);
+                                void acceptHubRoomInvite(item).finally(() => setBusyActionId(null));
+                              }}
+                            >
+                              接受并进房
+                            </Button>
+                            <Button
+                              variant="glass"
+                              size="small"
+                              destructive
+                              icon={<X size={14} />}
+                              loading={busyActionId === `${item.id}:deny-invite`}
+                              disabled={Boolean(busyActionId)}
+                              onClick={() => {
+                                setBusyActionId(`${item.id}:deny-invite`);
+                                void denyHubRoomInvite(item).finally(() => setBusyActionId(null));
+                              }}
+                            >
+                              婉拒
+                            </Button>
+                          </>
+                        )}
+                        {isRoomInvite && item.actionStatus === 'approved' && (
+                          <Button
+                            variant="glass"
+                            size="small"
+                            icon={<Gamepad2 size={14} />}
+                            loading={busyActionId === `${item.id}:rejoin`}
+                            disabled={Boolean(busyActionId)}
+                            onClick={() => {
+                              setBusyActionId(`${item.id}:rejoin`);
+                              void acceptHubRoomInvite(item).finally(() => setBusyActionId(null));
+                            }}
+                          >
+                            重新进房
+                          </Button>
+                        )}
                         {isDocRequest && item.actionStatus === 'pending' && (
                           <>
                             <Button
@@ -878,7 +962,7 @@ export function InboxPage(): JSX.Element {
                             查看更新
                           </Button>
                         )}
-                        {!item.isRead && (!isDocRequest || item.actionStatus !== 'pending') && (
+                        {!item.isRead && !needsPendingAction && (
                           <Button
                             variant="glass"
                             size="small"

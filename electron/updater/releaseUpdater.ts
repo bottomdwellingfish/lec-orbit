@@ -8,7 +8,7 @@
  *   后台 ditto 静默解压校验 + xattr 预清隔离 → 点击后拉起脱离父进程的原子替换脚本（带失败自动回滚）
  *   并在 2 秒内自动拉起新版本；若运行在只读 DMG 卷或隔离沙箱中则自动回退打开 .dmg。
  */
-import { app, net, shell } from 'electron';
+import { app, net, powerMonitor, shell } from 'electron';
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -37,6 +37,10 @@ const LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases
 const LATEST_RELEASE_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
 const LATEST_DOWNLOAD_BASE = `https://github.com/${GITHUB_REPO}/releases/latest/download`;
 const EXPECTED_MAC_BUNDLE_ID = 'top.lecspace.orbit';
+const AUTO_CHECK_INITIAL_DELAY_MS = 6_000;
+const AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 分钟（走零限流 GitHub CDN 清单）
+const AUTO_CHECK_RETRY_DELAY_MS = 2 * 60 * 1000; // 首次/后台检查失败 2 分钟后重试一次
+const RESUME_CHECK_THROTTLE_MS = 10 * 60 * 1000; // 休眠唤醒节流 10 分钟
 
 type GitHubAsset = ReleaseAssetInfo;
 
@@ -148,8 +152,15 @@ export class OrbitUpdater {
   private initialized = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private initialTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private resumeTimer: NodeJS.Timeout | null = null;
+  private resumeHandler: (() => void) | null = null;
+  private checkingPromise: Promise<UpdateCheckResult> | null = null;
+  private lastCheckStartedAt = 0;
+  private autoDownloadedVersion: string | null = null;
   private downloadedViaAutoUpdater = false;
   private downloading = false;
+  private silentDownloading = false;
   private installing = false;
   private expectedAssetSha512: string | undefined;
   private stagedMacUpdate: StagedMacUpdate | null = null;
@@ -173,17 +184,25 @@ export class OrbitUpdater {
     return () => this.listeners.delete(listener);
   }
 
-  /** 启动后延迟静默检查 + 每 4 小时后台自动检查。 */
+  /** 启动后延迟静默检查 + 每 30 分钟后台轮询 + 系统休眠唤醒复查（发现支持自动安装的新版时自动静默预下载）。 */
   startAutoCheck(): void {
     this.stopAutoCheck();
     this.initialTimer = setTimeout(() => {
-      void this.check();
-    }, 6_000);
+      void this.check({ silent: true });
+    }, AUTO_CHECK_INITIAL_DELAY_MS);
     this.pollTimer = setInterval(() => {
       if (this.state.stage !== 'downloading' && this.state.stage !== 'downloaded') {
-        void this.check();
+        void this.check({ silent: true });
       }
-    }, 4 * 60 * 60 * 1000);
+    }, AUTO_CHECK_INTERVAL_MS);
+    this.resumeHandler = () => {
+      if (this.resumeTimer) clearTimeout(this.resumeTimer);
+      // 唤醒后等待 5 秒待 Wi-Fi 重新握手后再节流复查
+      this.resumeTimer = setTimeout(() => {
+        void this.checkIfStale(RESUME_CHECK_THROTTLE_MS);
+      }, 5_000);
+    };
+    powerMonitor.on('resume', this.resumeHandler);
   }
 
   stopAutoCheck(): void {
@@ -195,6 +214,29 @@ export class OrbitUpdater {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
+    if (this.resumeHandler) {
+      powerMonitor.removeListener('resume', this.resumeHandler);
+      this.resumeHandler = null;
+    }
+  }
+
+  /** 节流静默检查（供窗口重新聚焦、系统休眠唤醒等时机调用）。 */
+  async checkIfStale(minIntervalMs = 15 * 60 * 1000): Promise<UpdateCheckResult> {
+    if (this.state.stage === 'downloading' || this.state.stage === 'downloaded') {
+      return this.state;
+    }
+    if (Date.now() - this.lastCheckStartedAt < minIntervalMs) {
+      return this.state;
+    }
+    return this.check({ silent: true });
   }
 
   private updateState(patch: Partial<UpdateCheckResult>): UpdateCheckResult {
@@ -254,6 +296,7 @@ export class OrbitUpdater {
     autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
       this.downloadedViaAutoUpdater = true;
       this.downloading = false;
+      this.silentDownloading = false;
       this.updateState({
         available: true,
         checked: true,
@@ -265,7 +308,18 @@ export class OrbitUpdater {
     });
 
     autoUpdater.on('error', (err: Error) => {
+      const wasSilent = this.silentDownloading;
       this.downloading = false;
+      this.silentDownloading = false;
+      if (wasSilent && this.state.available) {
+        // 后台静默预下载失败时温和回退为 available，不弹出报错，保留左下角手动下载入口
+        this.updateState({
+          stage: 'available',
+          progressPercent: undefined,
+          errorMessage: undefined,
+        });
+        return;
+      }
       this.updateState({
         stage: 'error',
         errorMessage: err?.message || '自动更新下载失败，请改用浏览器下载。',
@@ -512,14 +566,51 @@ export class OrbitUpdater {
     return { payload: data, status: 200 };
   }
 
-  async check(): Promise<UpdateCheckResult> {
+  async check(options?: { silent?: boolean }): Promise<UpdateCheckResult> {
+    if (this.checkingPromise) return this.checkingPromise;
+    if (options?.silent && (this.state.stage === 'downloading' || this.state.stage === 'downloaded')) {
+      return this.state;
+    }
+    const task = this.runCheck(Boolean(options?.silent));
+    this.checkingPromise = task;
+    try {
+      const result = await task;
+      // 打包态且支持应用内一键重启安装时，发现新版本后自动静默预下载（每版本仅自动触发一次）
+      if (
+        app.isPackaged &&
+        result.available &&
+        result.latestVersion &&
+        result.canAutoInstall &&
+        result.stage === 'available' &&
+        !this.downloading &&
+        this.autoDownloadedVersion !== result.latestVersion
+      ) {
+        this.autoDownloadedVersion = result.latestVersion;
+        void this.download({ silent: true });
+      }
+      return result;
+    } finally {
+      if (this.checkingPromise === task) {
+        this.checkingPromise = null;
+      }
+    }
+  }
+
+  private async runCheck(silent: boolean): Promise<UpdateCheckResult> {
     const currentVersion = app.getVersion();
     const preferMacZip = Boolean(this.getReplaceableMacAppPath());
-    this.updateState({
-      currentVersion,
-      stage: 'checking',
-      errorMessage: undefined,
-    });
+    this.lastCheckStartedAt = Date.now();
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (!silent) {
+      this.updateState({
+        currentVersion,
+        stage: 'checking',
+        errorMessage: undefined,
+      });
+    }
 
     try {
       // 1. 优先读取 GitHub Releases CDN 托管的 latest-mac.yml / latest.yml（无 API 限流，校园网共用出口 IP 100% 稳定）
@@ -625,6 +716,18 @@ export class OrbitUpdater {
         stage: 'up-to-date',
       });
     } catch (err) {
+      if (silent) {
+        // 静默检查遇到启动网络抖动时不暴露红框报错，2 分钟后静默重试一次
+        if (!this.retryTimer) {
+          this.retryTimer = setTimeout(() => {
+            this.retryTimer = null;
+            if (this.state.stage !== 'downloading' && this.state.stage !== 'downloaded') {
+              void this.check({ silent: true });
+            }
+          }, AUTO_CHECK_RETRY_DELAY_MS);
+        }
+        return this.state;
+      }
       return this.updateState({
         currentVersion,
         available: false,
@@ -680,8 +783,10 @@ export class OrbitUpdater {
     return { targetAppPath, stagedAppPath, workDir };
   }
 
-  async download(): Promise<UpdateCheckResult> {
+  async download(options?: { silent?: boolean }): Promise<UpdateCheckResult> {
     if (this.downloading) return this.state;
+    const silent = Boolean(options?.silent);
+    this.silentDownloading = silent;
 
     // 1. 支持原生自动安装（Windows NSIS / 已签名 macOS）-> 走 electron-updater（已指向零限流 CDN）
     if (this.supportsNativeAutoInstall()) {
@@ -696,6 +801,14 @@ export class OrbitUpdater {
         this.downloading = false;
         // 若原生 autoUpdater 失败且存在直链资产，自动降级为应用内直链进度下载
         if (!this.state.assetUrl) {
+          this.silentDownloading = false;
+          if (silent && this.state.available) {
+            return this.updateState({
+              stage: 'available',
+              progressPercent: undefined,
+              errorMessage: undefined,
+            });
+          }
           return this.updateState({
             stage: 'error',
             errorMessage: err instanceof Error ? err.message : '下载更新失败，请稍后重试。',
@@ -707,7 +820,8 @@ export class OrbitUpdater {
     // 2. 应用内流式下载 GitHub Release 对应平台资产（macOS .zip 原位预解压 / Windows .exe / .dmg）
     const assetUrl = this.state.assetUrl;
     if (!assetUrl) {
-      if (this.state.releaseUrl) {
+      this.silentDownloading = false;
+      if (!silent && this.state.releaseUrl) {
         await shell.openExternal(this.state.releaseUrl);
       }
       return this.state;
@@ -800,6 +914,7 @@ export class OrbitUpdater {
         const staged = await this.stageMacZipBundle(finalPath, replaceableMacAppPath, workDir);
         this.stagedMacUpdate = staged;
         this.downloading = false;
+        this.silentDownloading = false;
         return this.updateState({
           stage: 'downloaded',
           progressPercent: 100,
@@ -809,6 +924,7 @@ export class OrbitUpdater {
       }
 
       this.downloading = false;
+      this.silentDownloading = false;
       return this.updateState({
         stage: 'downloaded',
         progressPercent: 100,
@@ -818,6 +934,14 @@ export class OrbitUpdater {
     } catch (err) {
       fs.rmSync(partPath, { force: true });
       this.downloading = false;
+      this.silentDownloading = false;
+      if (silent && this.state.available) {
+        return this.updateState({
+          stage: 'available',
+          progressPercent: undefined,
+          errorMessage: undefined,
+        });
+      }
       return this.updateState({
         stage: 'error',
         errorMessage: err instanceof Error ? err.message : '安装包下载中断，请重试。',

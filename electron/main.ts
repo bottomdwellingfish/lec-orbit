@@ -18,6 +18,7 @@ import {
   MiniAppDisplayModeSchema,
   MiniAppEngineSchema,
   MiniAppIdSchema,
+  MiniAppLaunchRoomContextSchema,
   MiniAppPermissionScopeSchema,
   MiniAppTypeSchema,
   OrbitAppManifestSchema,
@@ -294,6 +295,17 @@ function registerIpcHandlers(): void {
       .parse(raw);
     return scanNearbyWifi(options);
   });
+  ipcMain.handle('orbit:system:openLocationSettings', async () => {
+    const targetUrl =
+      process.platform === 'win32'
+        ? 'ms-settings:privacy-location'
+        : process.platform === 'darwin'
+          ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices'
+          : '';
+    if (!targetUrl) return false;
+    await shell.openExternal(targetUrl);
+    return true;
+  });
   ipcMain.handle('orbit:system:getUpdateState', () => updater.getState());
   ipcMain.handle('orbit:system:checkUpdate', () => updater.check());
   ipcMain.handle('orbit:system:downloadUpdate', () => updater.download());
@@ -395,6 +407,7 @@ function registerIpcHandlers(): void {
             iconUrl: z.string().optional(),
           })
           .optional(),
+        launchRoom: MiniAppLaunchRoomContextSchema.optional(),
       })
       .parse(raw);
     return miniAppContainerManager.launch(payload);
@@ -838,6 +851,10 @@ app.whenReady().then(async () => {
     miniAppContainerManager?.syncTheme(configStore.get().theme);
   });
   windowManager.createMainWindow();
+  // 任意主窗口重新聚焦时节流复查更新（15 分钟内不重复请求），避免常驻托盘或重建窗口后错过发版
+  app.on('browser-window-focus', () => {
+    void updater?.checkIfStale(15 * 60 * 1000);
+  });
   trayManager.init(initialCfg.globalShortcut);
   trayManager.setFloatingBallEnabled(initialCfg.floatingBallEnabled);
   windowManager.syncFloatingBallEnabled(initialCfg.floatingBallEnabled);

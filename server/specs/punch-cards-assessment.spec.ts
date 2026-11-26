@@ -78,12 +78,25 @@ describe('卡牌工坊 21 张卡完整引擎（对接新版 coin 乐币）', () 
     const week = '2026-11-23';
     for (const id of ['u1', 'u2', 'u3']) getPlayerWeek(state, id, week);
 
-    // 1. 赠卡
-    state.members.u1.inventory['r-add'] = 1;
+    // 1. 赠卡（同年级 & 跨年级均允许，禁止赠送给自己）
+    state.members.u1.inventory['r-add'] = 2;
     applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u2' }, makeCtx());
-    expect(state.members.u1.inventory['r-add']).toBe(0);
+    expect(state.members.u1.inventory['r-add']).toBe(1);
     expect(state.members.u2.inventory['r-add']).toBe(1);
     expect(state.members.u2.discovered).toContain('r-add');
+
+    // 跨年级赠卡（2025 级 u1 -> 2024 级 u4）
+    applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u4' }, makeCtx());
+    expect(state.members.u1.inventory['r-add']).toBe(0);
+    expect(state.members.u4.inventory['r-add']).toBe(1);
+    expect(state.members.u4.discovered).toContain('r-add');
+
+    // 禁止赠送给自己
+    state.members.u1.inventory['r-add'] = 1;
+    expect(() =>
+      applyGameAction(state, 'u1', { action: 'gift', cardId: 'r-add', targetId: 'u1' }, makeCtx()),
+    ).toThrow('请选择团队中的其他有效成员');
+    state.members.u1.inventory['r-add'] = 0;
 
     // 2. 问号卡随机换卡（绝不抽出 r-mystery 自身）
     state.members.u1.inventory['r-mystery'] = 1;
@@ -296,18 +309,18 @@ describe('周考核自动观测与跨周结算引擎（60 秒定时任务核心�
       { userId: 'pass', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'fail', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'newbie', enrollYear: 2025, goalSeconds: 28 * 3600, createdAt: startsAt + 3600_000, joinedAt: startsAt + 3600_000, status: 'active' as const },
-      { userId: 'senior', enrollYear: 2023, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
+      { userId: 'senior', enrollYear: 2022, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'active' as const },
       { userId: 'disabled', enrollYear: 2024, goalSeconds: 38 * 3600, createdAt: oldJoin, joinedAt: oldJoin, status: 'disabled' as const },
     ];
 
-    let state = createAssessmentWeek(weekKey, startsAt + 60_000, members, enabledAt, [2025, 2024]);
+    let state = createAssessmentWeek(weekKey, startsAt + 60_000, members, enabledAt, [2025, 2024, 2023]);
     expect(state.coverageTrusted).toBe(true);
 
     // 模拟周内持续观测至周结束（步长 4 分钟 <= 5 分钟间隔）
     for (let ts = startsAt + 4 * 60_000; ts <= endsAt; ts += 4 * 60_000) {
-      state = observeAssessmentWeek(state, ts, members, [2025, 2024]);
+      state = observeAssessmentWeek(state, ts, members, [2025, 2024, 2023]);
     }
-    state = observeAssessmentWeek(state, endsAt, members, [2025, 2024]);
+    state = observeAssessmentWeek(state, endsAt, members, [2025, 2024, 2023]);
     expect(state.coverageTrusted).toBe(true);
 
     // 未满 5 小时保持 pending

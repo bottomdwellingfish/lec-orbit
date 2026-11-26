@@ -1,0 +1,433 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 68vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.statCard {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+}
+
+.statLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--orbit-text-muted);
+}
+
+.statValue {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--orbit-text);
+}
+
+.statSub {
+  font-size: 10.5px;
+  color: var(--orbit-text-muted);
+}
+
+/* ── 折线图与热力图双栏可视化 ── */
+.chartsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.chartCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  min-width: 0;
+}
+
+.chartHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.chartTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.chartLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--orbit-text-muted);
+
+  strong {
+    color: var(--orbit-text);
+    font-weight: 600;
+  }
+}
+
+.legendDotPlays,
+.legendDotUsers {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.legendDotPlays {
+  background: #0a84ff;
+}
+
+.legendDotUsers {
+  background: #22c55e;
+  margin-left: 4px;
+}
+
+.lineSvg {
+  width: 100%;
+  height: 104px;
+  display: block;
+  overflow: visible;
+}
+
+.gridLine {
+  stroke: var(--orbit-border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.playsPath {
+  stroke: #0a84ff;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.usersPath {
+  stroke: #22c55e;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.playsDot {
+  fill: #0a84ff;
+}
+
+.axisText {
+  fill: var(--orbit-text-muted);
+  font-size: 9.5px;
+  font-family: var(--orbit-mono);
+}
+
+.heatmapGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.heatCell {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  border: 1px solid var(--orbit-border);
+  transition: transform 100ms ease;
+
+  &:hover {
+    transform: scale(1.14);
+  }
+}
+
+.heatL0 {
+  background: var(--orbit-surface-strong);
+}
+
+.heatL1 {
+  background: rgba(10, 132, 255, 0.22);
+  border-color: rgba(10, 132, 255, 0.25);
+}
+
+.heatL2 {
+  background: rgba(10, 132, 255, 0.45);
+  border-color: rgba(10, 132, 255, 0.45);
+}
+
+.heatL3 {
+  background: rgba(10, 132, 255, 0.72);
+  border-color: rgba(10, 132, 255, 0.72);
+}
+
+.heatL4 {
+  background: #0a84ff;
+  border-color: #0a84ff;
+}
+
+.rateBox {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+}
+
+.rateHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rateTitle {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.rateQuota {
+  font-size: 11px;
+  font-family: var(--orbit-mono);
+  color: var(--orbit-text-muted);
+}
+
+.starsRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.starBtn {
+  border: none;
+  background: transparent;
+  padding: 2px;
+  color: var(--orbit-text-muted);
+  cursor: pointer;
+  transition: transform 110ms ease, color 110ms ease;
+
+  &:hover {
+    transform: scale(1.12);
+  }
+}
+
+.starBtnActive {
+  color: #f59e0b;
+}
+
+.scoreLabel {
+  margin-left: 6px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: #d97706;
+}
+:global([data-theme='dark']) .scoreLabel {
+  color: #fbbf24;
+}
+
+.rateFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rateTip,
+.rateHint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+}
+
+.sectionTabBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--orbit-border);
+}
+
+.sectionTabBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--orbit-text-muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+
+  &:hover {
+    background: var(--orbit-surface);
+    color: var(--orbit-text);
+  }
+}
+
+.sectionTabBtnActive {
+  background: rgba(10, 132, 255, 0.12);
+  border-color: rgba(10, 132, 255, 0.32);
+  color: #0a84ff;
+  font-weight: 650;
+}
+
+.sectionTabCount {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--orbit-surface-strong);
+  font-family: var(--orbit-mono);
+  font-size: 10.5px;
+  color: inherit;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: rgba(10, 132, 255, 0.14);
+  border: 1px solid var(--orbit-border);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.avatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rowName {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gradeTag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+  font-size: 10px;
+  color: var(--orbit-text-muted);
+}
+
+.starPill {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 650;
+}
+:global([data-theme='dark']) .starPill {
+  color: #fcd34d;
+}
+
+.timeText {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--orbit-text-muted);
+}
+
+.rowSub {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+}
+
+.rowComment {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--orbit-text);
+}
+
+.rowCommentMuted {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+}
+
+@media (max-width: 640px) {
+  .statGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .chartsGrid {
+    grid-template-columns: 1fr;
+  }
+}

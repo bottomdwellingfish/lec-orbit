@@ -34,16 +34,20 @@ export class OrbitHttpExceptionFilter implements ExceptionFilter {
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const body = exception.getResponse();
-      if (typeof body === 'string') {
-        message = body;
+      if (typeof body === 'string' && body.trim()) {
+        message = body.trim();
       } else if (body && typeof body === 'object') {
         const record = body as Record<string, unknown>;
-        if (typeof record.error === 'string' && record.error.trim()) {
-          message = record.error;
-        } else if (typeof record.message === 'string' && record.message.trim()) {
-          message = record.message;
-        } else if (Array.isArray(record.message) && typeof record.message[0] === 'string') {
-          message = record.message[0];
+        // NestJS 默认把精准业务文案放在 message，而把通用英文状态名（如 "Bad Request"）放在 error，必须优先取 message
+        if (typeof record.message === 'string' && record.message.trim()) {
+          message = record.message.trim();
+        } else if (Array.isArray(record.message)) {
+          const joined = record.message
+            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+            .join('；');
+          if (joined) message = joined;
+        } else if (typeof record.error === 'string' && record.error.trim()) {
+          message = record.error.trim();
         }
       }
     } else if (exception instanceof Error) {
@@ -52,13 +56,14 @@ export class OrbitHttpExceptionFilter implements ExceptionFilter {
       this.logger.error(`未知异常: ${String(exception)}`);
     }
 
+    const payload = { error: message, message, statusCode: status };
     if (typeof res.status === 'function') {
-      res.status(status).json({ error: message });
+      res.status(status).json(payload);
       return;
     }
 
     res.statusCode = status;
     res.setHeader?.('Content-Type', 'application/json; charset=utf-8');
-    res.end?.(JSON.stringify({ error: message }));
+    res.end?.(JSON.stringify(payload));
   }
 }

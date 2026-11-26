@@ -82,8 +82,14 @@ export class PunchAttendanceController {
   }
 
   @Post('keepalive')
-  keepAlive(@PunchCurrentUser() user: PunchAuthUser) {
-    return this.attendanceService.keepAlive(user);
+  async keepAlive(
+    @PunchCurrentUser() user: PunchAuthUser,
+    @Req() req: { headers?: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } },
+    @Body() rawBody: unknown,
+  ) {
+    const parsed = CheckBodySchema.parse(rawBody ?? {});
+    const ip = await this.networkPolicy.extractClientIp(user.teamId, req);
+    return this.attendanceService.keepAlive(user, ip, parsed.wifiScan as WifiScanSample[]);
   }
 
   @Get('admin/current-week-adjustment-context')

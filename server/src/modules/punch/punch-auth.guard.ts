@@ -16,6 +16,7 @@ import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuthService } from '../auth/auth.service.js';
+import { EconomyLedgerService } from '../economy/economy-ledger.service.js';
 import { PunchTeamEntity, PunchUserEntity } from './entities/punch-core.entities.js';
 import { newObjectIdHex } from './punch-shared.util.js';
 
@@ -51,6 +52,7 @@ export class PunchAuthGuard implements CanActivate {
     private readonly userRepo: Repository<PunchUserEntity>,
     @InjectRepository(PunchTeamEntity)
     private readonly teamRepo: Repository<PunchTeamEntity>,
+    private readonly economyLedger: EconomyLedgerService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -87,6 +89,9 @@ export class PunchAuthGuard implements CanActivate {
     if (member.status === 'disabled') {
       throw new ForbiddenException('当前账号已被禁用');
     }
+
+    // 兜底合并历史迁移时暂存在 punch_users.id 下的期初乐币账户到当前 ssoSub
+    await this.economyLedger.mergeLegacyAccountIfNeeded(member.id, ssoUser.userId);
 
     const effectiveRole: 'member' | 'admin' =
       ssoUser.isCaptain || member.role === 'admin' ? 'admin' : 'member';
@@ -166,7 +171,16 @@ export class PunchAuthGuard implements CanActivate {
       await this.teamRepo.save(team);
     }
 
-    const currentYear = new Date().getUTCFullYear();
+    // 优先读取 LecSSO 花名册同步的真实入学年份，避免误用当前自然年（如将 2024 级错标为 2026 级）
+    const rosterRows = (await this.userRepo.query(
+      `SELECT enroll_year FROM orbit_members WHERE user_id = $1 LIMIT 1`,
+      [ssoUser.userId],
+    )) as Array<{ enroll_year: number | null }>;
+    const resolvedEnrollYear =
+      typeof rosterRows[0]?.enroll_year === 'number' && rosterRows[0].enroll_year >= 2015
+        ? rosterRows[0].enroll_year
+        : new Date().getUTCFullYear();
+
     const created = this.userRepo.create({
       id: newObjectIdHex(),
       logtoUserId: ssoUser.userId,
@@ -176,7 +190,7 @@ export class PunchAuthGuard implements CanActivate {
       teamId: team.id,
       role: ssoUser.isCaptain ? 'admin' : 'member',
       status: 'active',
-      enrollYear: currentYear,
+      enrollYear: resolvedEnrollYear,
       studentId: null,
       realName: ssoUser.displayName || null,
       avatarUrl: ssoUser.avatar || null,

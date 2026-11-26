@@ -1,5 +1,6 @@
 /** 彩色带图标工作室称号 Tag（左图标 + 右称号名 + 专属底色与微光描边，自适应浅色/深色主题）。 */
-import type { JSX } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CalendarCheck,
   Crosshair,
@@ -93,27 +94,111 @@ interface TitleBadgeListProps {
   titles?: MemberTitleBadge[];
   size?: 'xs' | 'sm' | 'md';
   maxVisible?: number;
+  /** 强制单行排列不换行（用于排行榜等高密度列表） */
+  singleLine?: boolean;
+  /** 超出 maxVisible 时折叠为 +N 省略胶囊，并在悬停时以悬浮卡展示全部称号及说明 */
+  overflowPopover?: boolean;
   onBadgeClick?: (title: MemberTitleBadge) => void;
 }
+
+const POPOVER_MAX_WIDTH = 276;
 
 export function TitleBadgeList({
   titles,
   size = 'xs',
   maxVisible = 2,
+  singleLine = false,
+  overflowPopover = false,
   onBadgeClick,
 }: TitleBadgeListProps): JSX.Element | null {
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties | null>(null);
+
+  const count = titles?.length ?? 0;
+  const hiddenCount = Math.max(0, count - maxVisible);
+  const canShowPopover = overflowPopover && hiddenCount > 0;
+
+  useEffect(() => {
+    if (!popoverStyle) return;
+    const dismiss = () => setPopoverStyle(null);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [popoverStyle]);
+
   if (!titles || titles.length === 0) return null;
   const visible = titles.slice(0, maxVisible);
+
+  const openPopover = () => {
+    if (!canShowPopover || !wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(12, rect.left),
+      Math.max(12, window.innerWidth - POPOVER_MAX_WIDTH - 12),
+    );
+    const placeAbove = rect.top > 180;
+    setPopoverStyle(
+      placeAbove
+        ? {
+            left,
+            bottom: window.innerHeight - rect.top + 8,
+          }
+        : {
+            left,
+            top: rect.bottom + 8,
+          },
+    );
+  };
+
+  const closePopover = () => {
+    if (popoverStyle) setPopoverStyle(null);
+  };
+
   return (
-    <span className={styles.list}>
-      {visible.map((t) => (
-        <TitleBadge
-          key={t.id}
-          title={t}
-          size={size}
-          onClick={onBadgeClick ? () => onBadgeClick(t) : undefined}
-        />
-      ))}
-    </span>
+    <>
+      <span
+        ref={wrapRef}
+        className={`${styles.list} ${singleLine ? styles.listSingleLine : ''}`}
+        onMouseEnter={canShowPopover ? openPopover : undefined}
+        onMouseLeave={canShowPopover ? closePopover : undefined}
+      >
+        {visible.map((t) => (
+          <TitleBadge
+            key={t.id}
+            title={t}
+            size={size}
+            onClick={onBadgeClick ? () => onBadgeClick(t) : undefined}
+          />
+        ))}
+        {overflowPopover && hiddenCount > 0 && (
+          <span
+            className={`${styles.morePill} ${styles[`size_${size}`] ?? styles.size_xs}`}
+            aria-label={`还有 ${hiddenCount} 个称号，悬停查看全部`}
+          >
+            +{hiddenCount}
+          </span>
+        )}
+      </span>
+      {canShowPopover &&
+        popoverStyle &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className={styles.popover} style={popoverStyle} role="tooltip">
+            <div className={styles.popoverHeader}>全部称号（{titles.length}）</div>
+            <div className={styles.popoverItems}>
+              {titles.map((t) => (
+                <div key={t.id} className={styles.popoverRow}>
+                  <TitleBadge title={t} size="xs" />
+                  <span className={styles.popoverDesc}>{t.description}</span>
+                </div>
+              ))}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }

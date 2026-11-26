@@ -1,5 +1,20 @@
 import { Column, Entity, Index, PrimaryColumn } from 'typeorm';
 
+export interface OrbitMemberSocialSnapshot {
+  github?: {
+    username: string | null;
+    name: string | null;
+    avatar: string | null;
+    profileUrl: string | null;
+  } | null;
+  feishu?: {
+    name: string | null;
+    enName: string | null;
+    avatar: string | null;
+    linked: boolean;
+  } | null;
+}
+
 /** 工作室成员花名册缓存（同步自 LecSSO lec-studio 组织）。 */
 @Entity({ name: 'orbit_members' })
 export class OrbitMemberEntity {
@@ -17,6 +32,15 @@ export class OrbitMemberEntity {
 
   @Column({ name: 'is_captain', type: 'boolean', default: false })
   isCaptain: boolean;
+
+  @Column({ name: 'enroll_year', type: 'int', nullable: true })
+  enrollYear: number | null;
+
+  @Column({ name: 'roles_json', type: 'jsonb', default: () => "'[]'::jsonb" })
+  rolesJson: string[];
+
+  @Column({ name: 'social_json', type: 'jsonb', default: () => "'{}'::jsonb" })
+  socialJson: OrbitMemberSocialSnapshot;
 
   @Index()
   @Column({ name: 'is_active', type: 'boolean', default: true })

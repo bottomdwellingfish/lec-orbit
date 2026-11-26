@@ -13,10 +13,11 @@ import {
   Skeleton,
   Toolbar,
   ToolbarGroup,
-  Tooltip,
 } from '@lec-space/liquidglass';
 import { ArrowLeft, ArrowRight, BookOpen, Copy, ExternalLink, House, Pencil, Plus, RefreshCw, RotateCcw, Trash2, Users } from '@lec-space/icons';
+import { Rss } from 'lucide-react';
 import { parseBlogUrl, resolveBlogWriteUrl } from '@shared/blogUrl';
+import { BlogSiteLogo } from '@/components/BlogSiteLogo';
 import { blogApi, hasBlogDevCaptain, hasBlogDevIdentity, type MemberBlogItem } from '@/services/blogApi';
 import { getOrbitClient, isDesktopRuntime } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
@@ -26,8 +27,6 @@ import { HiddenBlogsDialog } from './HiddenBlogsDialog';
 import { MyBlogDialog } from './MyBlogDialog';
 import { useBlogOverlay } from './useBlogOverlay';
 import styles from './BlogHub.module.css';
-
-const VIEW_OPTIONS = [{ value: 'browse', label: '浏览博客' }, { value: 'recent', label: '最新动态' }];
 
 function memberName(member: MemberBlogItem): string {
   return member.displayName || member.username || member.blogTitle || member.userId;
@@ -55,6 +54,7 @@ export function BlogHubPage(): JSX.Element {
   const consumeBlogUrl = useOrbitStore((state) => state.consumeBlogUrl);
   const clearBlogTarget = useOrbitStore((state) => state.clearBlogTarget);
   const setLoginModalOpen = useOrbitStore((state) => state.setLoginModalOpen);
+  const setActiveTab = useOrbitStore((state) => state.setActiveTab);
 
   const [mode, setMode] = useState<'browse' | 'recent'>('browse');
   const [query, setQuery] = useState('');
@@ -87,6 +87,14 @@ export function BlogHubPage(): JSX.Element {
   useEffect(() => {
     if (pendingBlogUrl) setMode('browse');
   }, [pendingBlogUrl]);
+
+  // 进入博客页且尚未选中成员时，默认打开第一位已绑定博客的成员，避免大片空白占位
+  useEffect(() => {
+    if (canAccess && mode === 'browse' && !selectedBlogUserId && !pendingBlogUrl && memberBlogs.length > 0) {
+      const first = memberBlogs[0]!;
+      openBlogTarget(first.userId, first.blogUrl);
+    }
+  }, [canAccess, mode, selectedBlogUserId, pendingBlogUrl, memberBlogs, openBlogTarget]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -181,13 +189,24 @@ export function BlogHubPage(): JSX.Element {
     <section className={styles.page} aria-labelledby="blog-hub-title">
       {orbit.platform === 'darwin' && <div className={`${styles.dragStrip} orbit-drag`} aria-hidden="true" />}
       <header className={`${styles.header} orbit-no-drag`}>
-        <h1 id="blog-hub-title">成员博客</h1>
+        <div className={styles.headerLeft}>
+          <h1 id="blog-hub-title">工作室动态</h1>
+          <SegmentedControl
+            value="blogs"
+            onValueChange={(value) => {
+              if (value === 'studio') setActiveTab('punch-studio');
+            }}
+            items={[
+              { value: 'studio', label: '动态与名录' },
+              {
+                value: 'blogs',
+                label: memberBlogs.length > 0 ? `成员博客 (${memberBlogs.length})` : '成员博客',
+              },
+            ]}
+          />
+        </div>
         {canAccess && (
           <div className={styles.headerControls}>
-            <SearchField aria-label="搜索成员或博客" value={query} onValueChange={setQuery}
-              placeholder="搜索成员或博客" variant="glass" className={styles.search} />
-            <SegmentedControl aria-label="博客视图" items={VIEW_OPTIONS} value={mode}
-              onValueChange={(value) => setMode(value === 'recent' ? 'recent' : 'browse')} />
             {canHide && (
               <Button variant="glass" size="small" icon={<RotateCcw size={14} />}
                 onClick={() => setHiddenManageOpen(true)}>
@@ -216,61 +235,6 @@ export function BlogHubPage(): JSX.Element {
         </Glass>
       ) : (
         <>
-          {(memberBlogs.length > 0 || blogsLoading) && (
-            <Glass className={`${styles.memberBar} orbit-no-drag`} aria-label="已绑定博客的成员">
-              <div className={styles.memberScroll} aria-busy={blogsLoading}>
-                {blogsLoading && memberBlogs.length === 0 ? (
-                  [0, 1, 2, 3, 4].map((item) => (
-                    <div key={item} className={styles.memberSkeleton} aria-hidden="true">
-                      <Skeleton shape="circle" width={43} height={43} />
-                      <Skeleton width={48} />
-                    </div>
-                  ))
-                ) : visibleMembers.length > 0 ? (
-                  visibleMembers.map((member) => (
-                    <Tooltip key={member.userId} side="right" content={
-                      <span className={styles.memberTooltip}>
-                        <strong>{member.blogTitle || memberName(member)}</strong>
-                        {member.bio && <span>{member.bio}</span>}
-                        {member.latestPostTitle && <span>{member.latestPostTitle}</span>}
-                        {member.latestPostAt && <time dateTime={member.latestPostAt}>{new Date(member.latestPostAt).toLocaleString('zh-CN')}</time>}
-                      </span>
-                    }>
-                      <Button variant="glass" size="large" className={styles.memberButton}
-                        aria-label={`浏览 ${memberName(member)} 的博客${member.hasRecentPost ? '，近 7 天有上新' : ''}`}
-                        aria-pressed={member.userId === selectedBlogUserId}
-                        onClick={() => readPost(member.userId, member.blogUrl)}>
-                        <span className={styles.avatarFrame} data-recent={member.hasRecentPost || undefined}>
-                          <Avatar src={member.avatarUrl || undefined} name={memberName(member)} size={43} shape="circle" />
-                        </span>
-                        <span className={styles.memberLabel}>{memberName(member)}</span>
-                      </Button>
-                    </Tooltip>
-                  ))
-                ) : (
-                  <p className={styles.noMatches}>没有符合条件的成员</p>
-                )}
-              </div>
-              {tags.length > 0 && (
-                <Popover label={tag ?? '全部标签'} aria-label="按技术标签筛选"
-                  open={tagFilterOpen} onOpenChange={setTagFilterOpen} align="end" width={240}
-                  trigger={{ size: 'small', className: styles.filterButton,
-                    'aria-label': tag ? `按技术标签筛选，当前标签 ${tag}` : '按技术标签筛选' }}>
-                  {({ close }) => (
-                    <div className={styles.filterOptions}>
-                      <Button variant={tag === null ? 'filled' : 'glass'} size="small"
-                        onClick={() => { setTag(null); close(); }}>全部标签</Button>
-                      {tags.map((value) => (
-                        <Button key={value} variant={tag === value ? 'filled' : 'glass'} size="small"
-                          onClick={() => { setTag(value); close(); }}>{value}</Button>
-                      ))}
-                    </div>
-                  )}
-                </Popover>
-              )}
-            </Glass>
-          )}
-
           {blogsError && (
             <div className={styles.inlineStatus}>
               <Message className={styles.warning}>{blogsError}</Message>
@@ -278,80 +242,170 @@ export function BlogHubPage(): JSX.Element {
             </div>
           )}
 
-          {mode === 'recent' ? (
-            <div className={styles.recentScroll}>
-              <BlogPostList onRead={readPost} />
-            </div>
-          ) : (
-            <Glass className={styles.browserPane}>
-              {selectedBlogUserId && (
-                <Toolbar className={`${styles.toolbar} orbit-no-drag`} edge="none" aria-label="博客浏览工具栏">
-                  <ToolbarGroup className={styles.browserControls}>
-                    <Button size="small" aria-label="后退" title="后退" disabled={!desktop || !blogState.canGoBack}
-                      icon={<ArrowLeft size={16} />} onClick={() => void orbit.blog.goBack().catch(viewError)} />
-                    <Button size="small" aria-label="前进" title="前进" disabled={!desktop || !blogState.canGoForward}
-                      icon={<ArrowRight size={16} />} onClick={() => void orbit.blog.goForward().catch(viewError)} />
-                    <Button size="small" aria-label="刷新博客" title="刷新博客" disabled={!desktop || !current}
-                      loading={desktop && blogState.loading} icon={<RefreshCw size={15} />}
-                      onClick={() => void orbit.blog.reload().catch(viewError)} />
-                    <Button size="small" aria-label="回到博客首页" title="回到博客首页" disabled={!selected}
-                      icon={<House size={16} />} onClick={() => selected && readPost(selected.userId, selected.blogUrl)} />
-                  </ToolbarGroup>
+          <div className={styles.splitWorkspace}>
+            {/* 左侧紧凑成员与动态导览栏 */}
+            <aside className={`${styles.sidebarPane} orbit-no-drag`} aria-label="成员博客导览">
+              <SearchField
+                aria-label="搜索成员或博客"
+                value={query}
+                onValueChange={setQuery}
+                placeholder="搜成员 / 博客标题…"
+                variant="glass"
+                className={styles.sidebarSearch}
+              />
 
-                  <div className={styles.siteMeta}>
-                    {selected && <Avatar src={selected.avatarUrl || undefined} name={memberName(selected)} size="small" />}
-                    <div className={styles.siteLabels}>
-                      <strong title={selected?.blogTitle || blogState.title}>
-                        {selected?.blogTitle || (selected ? memberName(selected) : blogState.title || current?.hostname)}
-                      </strong>
-                      <span title={current?.href}>
-                        {selected && selected.blogTitle ? `${memberName(selected)} · ` : ''}{current?.host}
-                      </span>
-                    </div>
-                  </div>
+              <button
+                type="button"
+                className={`${styles.sidebarNavBtn} ${mode === 'recent' ? styles.sidebarNavBtnActive : ''}`}
+                onClick={() => setMode('recent')}
+              >
+                <Rss size={14} />
+                <span>最新文章动态</span>
+              </button>
 
-                  <ToolbarGroup className={styles.browserActions}>
-                    {selected && (selected.rssUrl || selected.latestPostAt || selected.blogMode === 'HOSTED') && (
-                      <Button size="small" icon={<BookOpen size={15} />} onClick={() => setPostsAuthor(selected)}>Ta 的文章</Button>
+              {tags.length > 0 && (
+                <div className={styles.sidebarTagRow}>
+                  <Popover label={tag ?? '全部标签'} aria-label="按技术标签筛选"
+                    open={tagFilterOpen} onOpenChange={setTagFilterOpen} align="start" width={220}
+                    trigger={{ size: 'small', className: styles.filterButton,
+                      'aria-label': tag ? `按技术标签筛选，当前标签 ${tag}` : '按技术标签筛选' }}>
+                    {({ close }) => (
+                      <div className={styles.filterOptions}>
+                        <Button variant={tag === null ? 'filled' : 'glass'} size="small"
+                          onClick={() => { setTag(null); close(); }}>全部标签</Button>
+                        {tags.map((value) => (
+                          <Button key={value} variant={tag === value ? 'filled' : 'glass'} size="small"
+                            onClick={() => { setTag(value); close(); }}>{value}</Button>
+                        ))}
+                      </div>
                     )}
-                    <Button size="small" aria-label="复制当前链接" title="复制当前链接" disabled={!current}
-                      icon={<Copy size={15} />} onClick={() => void copyUrl()} />
-                    <Button size="small" aria-label="在系统浏览器打开" title="在系统浏览器打开" disabled={!current}
-                      icon={<ExternalLink size={15} />} onClick={openExternal} />
-                    {canHide && selected && (
-                      <Button size="small" aria-label="下架该博客" title="下架该博客" destructive icon={<Trash2 size={15} />}
-                        onClick={() => { setHideError(null); setHideTarget(selected); }} />
-                    )}
-                  </ToolbarGroup>
-                </Toolbar>
+                  </Popover>
+                </div>
               )}
-              <div ref={hostRef} className={styles.viewport} aria-label="博客阅读视口">
-                {!selectedBlogUserId ? (
-                  <Empty icon={<BookOpen size={30} />}
-                    title={memberBlogs.length ? '选择一位成员开始浏览' : blogsLoading ? '正在读取成员博客' : '还没有成员绑定博客'}
-                    description={memberBlogs.length ? '点击上方头像打开博客主页。' : undefined} />
-                ) : blogState.overlayHidden && desktop ? (
-                  <Empty title="浏览已暂停" description="关闭弹层即可回到原来的页面。" />
-                ) : !desktop ? (
-                  <Empty icon={<ExternalLink size={25} />} title="在浏览器中阅读博客">
-                    <Button size="small" variant="glass" icon={<ExternalLink size={15} />} disabled={!current}
-                      onClick={openExternal}>打开博客</Button>
-                  </Empty>
-                ) : blogState.loadError ? (
-                  <Empty icon={<BookOpen size={26} />} title={blogState.loadError}>
-                    <div className={styles.emptyActions}>
-                      <Button size="small" variant="glass" icon={<RefreshCw size={15} />}
-                        onClick={() => void orbit.blog.reload().catch(viewError)}>重试</Button>
-                      <Button size="small" variant="glass" icon={<ExternalLink size={15} />}
-                        disabled={!current} onClick={openExternal}>在浏览器打开</Button>
+
+              <div className={styles.sidebarSectionLabel}>
+                <span>已开通成员</span>
+                <span>{visibleMembers.length}</span>
+              </div>
+
+              <div className={styles.sidebarList} aria-busy={blogsLoading}>
+                {blogsLoading && memberBlogs.length === 0 ? (
+                  [0, 1, 2].map((item) => (
+                    <div key={item} className={styles.sidebarRowSkeleton} aria-hidden="true">
+                      <Skeleton shape="circle" width={30} height={30} />
+                      <Skeleton width={110} />
                     </div>
-                  </Empty>
-                ) : !blogState.mounted && (
-                  <Empty title="正在打开博客" />
+                  ))
+                ) : visibleMembers.length > 0 ? (
+                  visibleMembers.map((member) => {
+                    const isSelected = mode === 'browse' && member.userId === selectedBlogUserId;
+                    const hostText = parseBlogUrl(member.blogUrl)?.host ?? member.blogUrl;
+                    return (
+                      <button
+                        key={member.userId}
+                        type="button"
+                        className={`${styles.sidebarMemberRow} ${isSelected ? styles.sidebarMemberRowActive : ''}`}
+                        aria-pressed={isSelected}
+                        title={member.blogTitle || member.blogUrl}
+                        onClick={() => readPost(member.userId, member.blogUrl)}
+                      >
+                        <span className={styles.avatarFrameSm} data-recent={member.hasRecentPost || undefined}>
+                          <Avatar src={member.avatarUrl || undefined} name={memberName(member)} size={30} shape="circle" />
+                        </span>
+                        <span className={styles.sidebarMemberMeta}>
+                          <span className={styles.sidebarMemberName}>{memberName(member)}</span>
+                          <span className={styles.sidebarMemberSub}>
+                            {member.blogTitle || hostText}
+                          </span>
+                        </span>
+                        <span className={styles.sidebarSiteLogo} aria-hidden="true">
+                          <BlogSiteLogo blogUrl={member.blogUrl} size={14} />
+                        </span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className={styles.noMatches}>没有符合条件的成员</p>
                 )}
               </div>
-            </Glass>
-          )}
+            </aside>
+
+            {/* 右侧阅读视口 / 最新动态流 */}
+            {mode === 'recent' ? (
+              <div className={styles.recentPane}>
+                <BlogPostList onRead={readPost} />
+              </div>
+            ) : (
+              <div className={styles.browserPane}>
+                {selectedBlogUserId && (
+                  <Toolbar className={`${styles.toolbar} orbit-no-drag`} edge="none" aria-label="博客浏览工具栏">
+                    <ToolbarGroup className={styles.browserControls}>
+                      <Button size="small" aria-label="后退" title="后退" disabled={!desktop || !blogState.canGoBack}
+                        icon={<ArrowLeft size={16} />} onClick={() => void orbit.blog.goBack().catch(viewError)} />
+                      <Button size="small" aria-label="前进" title="前进" disabled={!desktop || !blogState.canGoForward}
+                        icon={<ArrowRight size={16} />} onClick={() => void orbit.blog.goForward().catch(viewError)} />
+                      <Button size="small" aria-label="刷新博客" title="刷新博客" disabled={!desktop || !current}
+                        loading={desktop && blogState.loading} icon={<RefreshCw size={15} />}
+                        onClick={() => void orbit.blog.reload().catch(viewError)} />
+                      <Button size="small" aria-label="回到博客首页" title="回到博客首页" disabled={!selected}
+                        icon={<House size={16} />} onClick={() => selected && readPost(selected.userId, selected.blogUrl)} />
+                    </ToolbarGroup>
+
+                    <div className={styles.siteMeta}>
+                      {selected && <BlogSiteLogo blogUrl={selected.blogUrl} size={16} />}
+                      <div className={styles.siteLabels}>
+                        <strong title={selected?.blogTitle || blogState.title}>
+                          {selected?.blogTitle || (selected ? memberName(selected) : blogState.title || current?.hostname)}
+                        </strong>
+                        <span title={current?.href}>
+                          {selected && selected.blogTitle ? `${memberName(selected)} · ` : ''}{current?.host}
+                        </span>
+                      </div>
+                    </div>
+
+                    <ToolbarGroup className={styles.browserActions}>
+                      {selected && (selected.rssUrl || selected.latestPostAt || selected.blogMode === 'HOSTED') && (
+                        <Button size="small" icon={<BookOpen size={15} />} onClick={() => setPostsAuthor(selected)}>Ta 的文章</Button>
+                      )}
+                      <Button size="small" aria-label="复制当前链接" title="复制当前链接" disabled={!current}
+                        icon={<Copy size={15} />} onClick={() => void copyUrl()} />
+                      <Button size="small" aria-label="在系统浏览器打开" title="在系统浏览器打开" disabled={!current}
+                        icon={<ExternalLink size={15} />} onClick={openExternal} />
+                      {canHide && selected && (
+                        <Button size="small" aria-label="下架该博客" title="下架该博客" destructive icon={<Trash2 size={15} />}
+                          onClick={() => { setHideError(null); setHideTarget(selected); }} />
+                      )}
+                    </ToolbarGroup>
+                  </Toolbar>
+                )}
+                <div ref={hostRef} className={styles.viewport} aria-label="博客阅读视口">
+                  {!selectedBlogUserId ? (
+                    <Empty icon={<BookOpen size={30} />}
+                      title={memberBlogs.length ? '选择一位成员开始浏览' : blogsLoading ? '正在读取成员博客' : '还没有成员绑定博客'}
+                      description={memberBlogs.length ? '点击左侧成员列表即可阅读博客。' : '点击右上角「开通 / 绑定博客」添加你的个人站点'} />
+                  ) : blogState.overlayHidden && desktop ? (
+                    <Empty title="浏览已暂停" description="关闭弹层即可回到原来的页面。" />
+                  ) : !desktop ? (
+                    <Empty icon={<ExternalLink size={25} />} title="在浏览器中阅读博客">
+                      <Button size="small" variant="glass" icon={<ExternalLink size={15} />} disabled={!current}
+                        onClick={openExternal}>打开博客</Button>
+                    </Empty>
+                  ) : blogState.loadError ? (
+                    <Empty icon={<BookOpen size={26} />} title={blogState.loadError}>
+                      <div className={styles.emptyActions}>
+                        <Button size="small" variant="glass" icon={<RefreshCw size={15} />}
+                          onClick={() => void orbit.blog.reload().catch(viewError)}>重试</Button>
+                        <Button size="small" variant="glass" icon={<ExternalLink size={15} />}
+                          disabled={!current} onClick={openExternal}>在浏览器打开</Button>
+                      </div>
+                    </Empty>
+                  ) : !blogState.mounted && (
+                    <Empty title="正在打开博客" />
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </>
       )}
 

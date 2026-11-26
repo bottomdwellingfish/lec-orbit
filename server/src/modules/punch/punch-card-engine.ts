@@ -511,14 +511,22 @@ export function applyGameAction(
 
     if (paidDraws > 0) {
       const alreadyPaid = week.paidDrawsUsed ?? 0;
+      const remainingPaidQuota = Math.max(0, WEEKLY_MAX_PAID_DRAWS - alreadyPaid);
       if (alreadyPaid + paidDraws > WEEKLY_MAX_PAID_DRAWS) {
+        if (remainingPaidQuota === 0) {
+          throw new Error(
+            `本周付费抽卡已达上限（已用 ${alreadyPaid}/${WEEKLY_MAX_PAID_DRAWS} 抽），下周一零点重置`,
+          );
+        }
         throw new Error(
-          `本周付费抽卡已达上限（每周限 ${WEEKLY_MAX_PAID_DRAWS} 抽，已用 ${alreadyPaid} 抽）`,
+          `本周付费抽卡已达上限：本周还剩 ${remainingPaidQuota} 次付费额度（已用 ${alreadyPaid}/${WEEKLY_MAX_PAID_DRAWS} 抽），本次需付费 ${paidDraws} 抽，请改为单抽`,
         );
       }
       const balance = context.actorCoinBalance ?? 0;
       if (balance < coinCost) {
-        throw new Error(`可用乐币不足，需要 ${coinCost} 乐币（当前可用 ${balance} 乐币）`);
+        throw new Error(
+          `可用乐币不足：本次需付费 ${paidDraws} 抽（${COIN_COST_PER_DRAW} 分/抽，共需 ${coinCost} 分），当前仅剩 ${balance} 分`,
+        );
       }
     }
 
@@ -587,7 +595,11 @@ export function applyGameAction(
     };
   } else if (action.action === 'gift') {
     const card = getCard(action.cardId ?? '');
-    const target = chooseTarget(action.targetId);
+    const targetPlayer = context.players.find(
+      (player) => player.id === action.targetId && player.id !== actorId,
+    );
+    if (!targetPlayer) throw new Error('请选择团队中的其他有效成员');
+    const target = targetPlayer.id;
     if ((getPlayerWeek(next, target, context.week).starvedUntil ?? 0) > context.now) {
       throw new Error('目标兵粮寸断期间不能接收新卡');
     }

@@ -9,7 +9,7 @@ export const ATTENDANCE_MAX_SECONDS = 5 * 60 * 60; // 18000s (5小时)
 export const WARNING_THRESHOLD_SECONDS = ATTENDANCE_MAX_SECONDS - 15 * 60; // 17100s
 export const ATTENDANCE_KEEPALIVE_INTERVAL_SECONDS = 30;
 export const ATTENDANCE_KEEPALIVE_TIMEOUT_SECONDS = 180;
-export const FEVER_ACTIVE_THRESHOLD = 8; // 同团队同时在岗达 8 人进入狂热打卡时段（签退 +10%）
+export const FEVER_ACTIVE_THRESHOLD = 12; // 同团队同时在岗达 12 人进入狂热打卡时段（签退 +10%）
 
 export const PUNCH_ERROR_CODES = {
   AUTH_INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
@@ -63,7 +63,7 @@ export function comprehensiveDurationSeconds(
   return total;
 }
 
-/** 计算参与周考核的近两届入学年份（结合已持久化历史高水位，避免成员退出导致回退）。 */
+/** 计算参与周考核与称号体系的最近三届入学年份（大一至大三，结合已持久化高水位避免成员退出导致回退）。 */
 export function assessmentEnrollYears(
   enrollYears: readonly (number | null | undefined)[],
   previous: readonly number[] = [],
@@ -74,7 +74,7 @@ export function assessmentEnrollYears(
   );
   if (valid.length === 0) return [];
   const latest = Math.max(...valid);
-  return [latest, latest - 1];
+  return [latest, latest - 1, latest - 2];
 }
 
 /** 判断指定年级是否属于当周必考年级。 */

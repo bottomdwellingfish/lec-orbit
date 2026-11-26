@@ -20,7 +20,7 @@ import {
   Settings,
   Users,
 } from '@lec-space/icons';
-import { Compass, Gamepad2, Rss, Sparkles, X } from 'lucide-react';
+import { Compass, Gamepad2, Sparkles, X } from 'lucide-react';
 import { formatReadableDuration, getCurrentIsoWeek } from '@shared/punch';
 import { evaluateFocusReminder } from '@shared/reminders';
 import { compareOrbitSemver } from '@shared/updateChangelog';
@@ -98,6 +98,8 @@ export function App(): JSX.Element {
   const toggleCheckInOut = useOrbitStore((s) => s.toggleCheckInOut);
   const applyOrbitWsEvent = useOrbitStore((s) => s.applyOrbitWsEvent);
   const syncStaleData = useOrbitStore((s) => s.syncStaleData);
+  const sendAttendanceHeartbeat = useOrbitStore((s) => s.sendAttendanceHeartbeat);
+  const isCheckedIn = useOrbitStore((s) => Boolean(s.attendance?.isCheckedIn));
   const updateConfig = useOrbitStore((s) => s.updateConfig);
 
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -142,19 +144,40 @@ export function App(): JSX.Element {
     const offBlog = orbit.blog.onStateChanged(setBlogState);
     const offUpdate = orbit.system.onUpdateStateChanged((info) => {
       setUpdateInfo(info);
+      // 后台静默下载就绪时发出一次温和提示（不突兀弹窗，左下角卡片同步常驻「重启以更新」）
+      if (
+        info.available &&
+        info.latestVersion &&
+        info.stage === 'downloaded' &&
+        notifiedVersionRef.current !== `ready:${info.latestVersion}`
+      ) {
+        notifiedVersionRef.current = `ready:${info.latestVersion}`;
+        notifyToast({
+          tone: 'success',
+          title: `Orbit v${info.latestVersion} 已就绪`,
+          description: '新版本已在后台静默下载完成，可随时在左下角点击重启更新。',
+          action: {
+            label: info.canAutoInstall ? '重启以更新' : '打开安装包',
+            onClick: () => void orbit.system.installUpdate(),
+          },
+        });
+        return;
+      }
+      // 仅当当前平台不支持后台自动静默下载（如只读 DMG / Linux）时，在发现新版时温和提示一次
       if (
         info.available &&
         info.latestVersion &&
         info.stage === 'available' &&
-        notifiedVersionRef.current !== info.latestVersion
+        !info.canAutoInstall &&
+        notifiedVersionRef.current !== `avail:${info.latestVersion}`
       ) {
-        notifiedVersionRef.current = info.latestVersion;
+        notifiedVersionRef.current = `avail:${info.latestVersion}`;
         const changeCount = info.changelog?.items.length ?? 0;
         const contribCount = info.changelog?.contributors.length ?? 0;
         const summaryHint =
           changeCount > 0
-            ? `包含 ${changeCount} 项改动${contribCount > 0 ? `（${contribCount} 位成员参与）` : ''}，点击查看更新详情与修复成员。`
-            : '包含最新功能与内置 LecDoc 更新，点击查看详情并应用内下载。';
+            ? `包含 ${changeCount} 项改动${contribCount > 0 ? `（${contribCount} 位成员参与）` : ''}，可在左下角查看详情并下载。`
+            : '包含最新功能与内置 LecDoc 更新，可在左下角查看详情并下载。';
         notifyToast({
           tone: 'info',
           title: `发现 Orbit 新版本 v${info.latestVersion}`,
@@ -280,6 +303,19 @@ export function App(): JSX.Element {
     };
   }, [isFloatingBall, auth.authenticated, syncStaleData]);
 
+  // 打卡中后台心跳：每 3 分钟自动上报 /attendance/keepalive（含周边 Wi-Fi 指纹），
+  // 即使窗口最小化到托盘也持续校对在线状态、防 5 小时超时不同步并检测是否离开工作室环境
+  useEffect(() => {
+    if (isAuxiliaryWindow || !auth.authenticated || !isCheckedIn) return;
+    const HEARTBEAT_INTERVAL_MS = 3 * 60_000;
+    const timer = window.setInterval(() => {
+      void sendAttendanceHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isAuxiliaryWindow, auth.authenticated, isCheckedIn, sendAttendanceHeartbeat]);
+
   // 专注提醒真实定时引擎：连续专注 2h 休息、4h15m / 4h45m 防超 5 小时上限签退、周末考核冲刺提醒
   useEffect(() => {
     if (isAuxiliaryWindow || !auth.authenticated || !config.remindersEnabled) return;
@@ -385,7 +421,6 @@ export function App(): JSX.Element {
       { id: 'punch-cards', label: '卡牌工坊', icon: <Sparkles size={17} /> },
       { id: 'punch-studio', label: '工作室', icon: <Users size={17} /> },
       { id: 'doc', label: '团队文档', icon: <BookOpen size={17} /> },
-      { id: 'blogs', label: '成员博客', icon: <Rss size={17} /> },
       { id: 'hub', label: '工坊', icon: <Gamepad2 size={17} />, badgeCount: hubRuntime.apps.length || undefined },
       { id: 'inbox', label: '通知中心', icon: <Bell size={17} />, badgeCount: unreadCount },
       { id: 'products', label: '应用导航', icon: <Compass size={17} /> },
@@ -544,18 +579,22 @@ export function App(): JSX.Element {
             </div>
 
             <nav className={styles.nav} aria-label="主导航">
-              {navItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`${styles.navItem} ${activeTab === item.id ? styles.navItemActive : ''}`}
-                  onClick={() => setActiveTab(item.id)}
-                >
-                  <span className={styles.navIcon}>{item.icon}</span>
-                  <span className={styles.navLabel}>{item.label}</span>
-                  {item.badgeCount ? <Badge count={item.badgeCount} /> : null}
-                </button>
-              ))}
+              {navItems.map((item) => {
+                const isActive =
+                  activeTab === item.id || (item.id === 'punch-studio' && activeTab === 'blogs');
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
+                    onClick={() => setActiveTab(item.id)}
+                  >
+                    <span className={styles.navIcon}>{item.icon}</span>
+                    <span className={styles.navLabel}>{item.label}</span>
+                    {item.badgeCount ? <Badge count={item.badgeCount} /> : null}
+                  </button>
+                );
+              })}
             </nav>
 
             {updateInfo &&
@@ -568,7 +607,7 @@ export function App(): JSX.Element {
                       {updateInfo.stage === 'downloaded'
                         ? `v${updateInfo.latestVersion} 已就绪`
                         : updateInfo.stage === 'downloading'
-                          ? `正在下载 v${updateInfo.latestVersion}`
+                          ? `后台更新 v${updateInfo.latestVersion}`
                           : `新版本 v${updateInfo.latestVersion}`}
                     </span>
                     {updateInfo.stage === 'available' && (

@@ -9,6 +9,7 @@ import {
   type TeamActiveMember,
   type TeamWeeklyRankingItem,
 } from '@shared/punch';
+import { BlogSiteLogo } from '@/components/BlogSiteLogo';
 import { SocialBrandGlyph } from '@/components/SocialBrandGlyph';
 import { TitleBadgeList } from '@/components/TitleBadge';
 import { getOrbitClient } from '@/services/orbitClient';
@@ -144,18 +145,35 @@ export interface MemberProfileDialogProps {
 export function MemberProfileDialog({ seed, onClose }: MemberProfileDialogProps): JSX.Element {
   const auth = useOrbitStore((s) => s.auth);
   const studioMembers = useOrbitStore((s) => s.studioMembers);
+  const studioMembersLoading = useOrbitStore((s) => s.studioMembersLoading);
+  const studioMembersError = useOrbitStore((s) => s.studioMembersError);
   const teamRanking = useOrbitStore((s) => s.teamRanking);
   const teamActive = useOrbitStore((s) => s.teamActive);
+  const memberBlogs = useOrbitStore((s) => s.memberBlogs);
+  const openBlogTarget = useOrbitStore((s) => s.openBlogTarget);
   const setActiveTab = useOrbitStore((s) => s.setActiveTab);
   const refreshStudioMembers = useOrbitStore((s) => s.refreshStudioMembers);
   const [copiedHandle, setCopiedHandle] = useState(false);
 
   // 打开名片时若尚未拉取过工作室成员目录，自动补拉一次以展示 GitHub / 飞书信息
   useEffect(() => {
-    if (seed && auth.authenticated && studioMembers.length === 0) {
+    if (
+      seed &&
+      auth.authenticated &&
+      studioMembers.length === 0 &&
+      !studioMembersLoading &&
+      !studioMembersError
+    ) {
       void refreshStudioMembers();
     }
-  }, [seed, auth.authenticated, studioMembers.length, refreshStudioMembers]);
+  }, [
+    seed,
+    auth.authenticated,
+    studioMembers.length,
+    studioMembersLoading,
+    studioMembersError,
+    refreshStudioMembers,
+  ]);
 
   const resolved = useMemo(() => {
     if (!seed) return null;
@@ -209,6 +227,19 @@ export function MemberProfileDialog({ seed, onClose }: MemberProfileDialogProps)
 
   const github = resolved?.member?.social.github ?? null;
   const feishu = resolved?.member?.social.feishu ?? null;
+  const memberBlog = useMemo(() => {
+    if (!resolved) return null;
+    if (resolved.member?.id) {
+      const byId = memberBlogs.find((b) => b.userId === resolved.member!.id);
+      if (byId) return byId;
+    }
+    if (resolved.handle) {
+      const lower = resolved.handle.toLowerCase();
+      const byHandle = memberBlogs.find((b) => b.username?.toLowerCase() === lower);
+      if (byHandle) return byHandle;
+    }
+    return null;
+  }, [resolved, memberBlogs]);
   const githubLabel = github
     ? github.username
       ? github.name && github.name !== github.username
@@ -394,6 +425,37 @@ export function MemberProfileDialog({ seed, onClose }: MemberProfileDialogProps)
                   </div>
                 </div>
               </div>
+
+              {memberBlog && (
+                <div className={styles.socialItem}>
+                  <div className={styles.socialLeft}>
+                    <span className={styles.socialIconCircle} aria-hidden="true">
+                      <BlogSiteLogo blogUrl={memberBlog.blogUrl} size={18} />
+                    </span>
+                    <div className={styles.socialText}>
+                      <div className={styles.socialHead}>
+                        <span className={styles.socialName}>个人博客</span>
+                        <Tag tone="info">已开通</Tag>
+                      </div>
+                      <div className={styles.socialDesc}>
+                        {memberBlog.blogTitle || memberBlog.blogUrl}
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="glass"
+                    size="small"
+                    icon={<ArrowUpRight size={13} />}
+                    onClick={() => {
+                      openBlogTarget(memberBlog.userId, memberBlog.blogUrl);
+                      onClose();
+                      setActiveTab('blogs');
+                    }}
+                  >
+                    阅读博客
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </div>

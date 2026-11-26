@@ -1,25 +1,47 @@
-/** LecPunch 成长与记录页：分段切换「打卡日历」「积分与考核」「周报工作台（SQLite 防丢草稿）」。 */
+/**
+ * LecPunch 成长与记录页（一页高密度总览 + 飞书式右侧极细图标栏与滑出侧栏）：
+ * - 主区一页呈现：顶部 4 项核心指标条 + 左栏月度打卡热力图 + 右栏本周周报工作台（SQLite 防丢草稿）；
+ * - 右边缘提供飞书风格竖排图标栏，按需滑出「打卡明细」「称号图鉴」「历史周考核」三类侧栏，避免多 Tab 分散与大片留白。
+ */
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import {
   ActivityCalendar,
   Button,
-  Card,
   Empty,
-  SegmentedControl,
-  Statistic,
   Tag,
   TextArea,
   type ActivityDay,
 } from '@lec-space/liquidglass';
 import { Save } from '@lec-space/icons';
-import { Award, Check, Sparkles } from 'lucide-react';
+import {
+  Award,
+  Check,
+  CheckCircle2,
+  Clock,
+  Coins,
+  FileText,
+  Sparkles,
+  Target,
+  TrendingUp,
+  X,
+} from 'lucide-react';
 import { formatReadableDuration, getCurrentIsoWeek } from '@shared/punch';
 import { TitleBadge, TitleBadgeList } from '@/components/TitleBadge';
 import { getOrbitClient } from '@/services/orbitClient';
 import { notifyToast } from '@/services/orbitToast';
 import { punchApi } from '@/services/punchApi';
-import { useOrbitStore, type GrowthSegment } from '@/stores/useOrbitStore';
+import { useOrbitStore } from '@/stores/useOrbitStore';
 import styles from './PunchGrowth.module.css';
+
+type GrowthDrawerKind = 'records' | 'titles' | 'history' | null;
+
+interface WeeklyHistoryItem {
+  weekKey: string;
+  totalDurationSeconds: number;
+  weeklyGoalSeconds: number;
+  assessmentComplete: boolean;
+  sessionsCount: number;
+}
 
 function currentYearMonth(): string {
   const d = new Date();
@@ -41,14 +63,59 @@ export function PunchGrowthPage(): JSX.Element {
   const segment = useOrbitStore((s) => s.growthSegment);
   const setSegment = useOrbitStore((s) => s.setGrowthSegment);
 
+  const [drawer, setDrawer] = useState<GrowthDrawerKind>(null);
+  const [recordFilterDate, setRecordFilterDate] = useState<string | null>(null);
   const [equippingId, setEquippingId] = useState<string | null>(null);
   const [month, setMonth] = useState(currentYearMonth);
   const [selectedDate, setSelectedDate] = useState(todayIso);
+
+  const [weeklyHistory, setWeeklyHistory] = useState<WeeklyHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const currentWeek = useMemo(() => getCurrentIsoWeek(), []);
   const [reportText, setReportText] = useState('');
   const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
+
+  // 兼容从工作室点击「我的称号」跳转：自动滑出右侧「称号图鉴」侧栏
+  useEffect(() => {
+    if (segment === 'titles') {
+      setDrawer('titles');
+      setSegment('calendar');
+    } else if (segment === 'assessment') {
+      setDrawer('history');
+      setSegment('calendar');
+    }
+  }, [segment, setSegment]);
+
+  // Esc 快捷键收起右侧滑出侧栏
+  useEffect(() => {
+    if (!drawer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDrawer(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawer]);
+
+  // 展开历史周考核侧栏时按需加载多周历史数据
+  useEffect(() => {
+    if (drawer !== 'history' || !auth.authenticated) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    void punchApi
+      .fetchMyWeeklyHistory(12)
+      .then((items) => {
+        if (!cancelled) setWeeklyHistory(items);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [drawer, auth.authenticated]);
 
   // 加载本地 SQLite 周报草稿（断网/关机防丢失）并尝试与远端合并
   useEffect(() => {
@@ -95,6 +162,47 @@ export function PunchGrowthPage(): JSX.Element {
     }));
   }, [records]);
 
+  const selectedDayRecords = useMemo(
+    () => records.filter((rec) => (rec.date ?? rec.checkInTime).slice(0, 10) === selectedDate),
+    [records, selectedDate],
+  );
+
+  const drawerRecords = useMemo(() => {
+    if (!recordFilterDate) return records;
+    return records.filter((rec) => (rec.date ?? rec.checkInTime).slice(0, 10) === recordFilterDate);
+  }, [records, recordFilterDate]);
+
+  const weekTotalSeconds = weeklyStats?.totalDurationSeconds ?? 0;
+  const weekTargetSeconds = weeklyStats?.targetDurationSeconds ?? 18 * 3600;
+  const progressPct =
+    weekTargetSeconds > 0
+      ? Math.min(100, Math.round((weekTotalSeconds / weekTargetSeconds) * 100))
+      : 100;
+  const remainingSeconds = Math.max(0, weekTargetSeconds - weekTotalSeconds);
+  const unlockedTitleCount = myTitles?.catalog.filter((c) => c.unlocked).length ?? 0;
+  const totalTitleCount = myTitles?.catalog.length ?? 0;
+  const isTitleEligible = myTitles?.eligible !== false;
+
+  const toggleDrawer = (kind: Exclude<GrowthDrawerKind, null>) => {
+    if (drawer === kind) {
+      setDrawer(null);
+      return;
+    }
+    if (kind === 'records') {
+      setRecordFilterDate(null);
+    }
+    setDrawer(kind);
+  };
+
+  const handleCalendarSelect = (date: string) => {
+    setSelectedDate(date);
+    const hasRecords = records.some((rec) => (rec.date ?? rec.checkInTime).slice(0, 10) === date);
+    if (hasRecords) {
+      setRecordFilterDate(date);
+      setDrawer('records');
+    }
+  };
+
   const handleSubmitReport = async () => {
     if (!reportText.trim()) return;
     setSubmittingReport(true);
@@ -104,7 +212,7 @@ export function PunchGrowthPage(): JSX.Element {
       notifyToast({
         tone: 'success',
         title: '周报已提交',
-        description: '已同步至 LecPunch 服务端，并保留本地 SQLite 备份。',
+        description: '已同步至服务端，并保留本地 SQLite 备份。',
       });
     } catch (err) {
       notifyToast({
@@ -118,35 +226,271 @@ export function PunchGrowthPage(): JSX.Element {
   };
 
   return (
-    <div className={styles.page}>
-      <header className={styles.header}>
-        <div>
-          <h1 className={styles.heading}>成长与记录</h1>
-          <p className={styles.subheading}>打卡热力图、每周考核趋势与本地防丢周报工作台</p>
-        </div>
-        <SegmentedControl
-          value={segment}
-          onValueChange={(v) => setSegment(v as GrowthSegment)}
-          items={[
-            { value: 'calendar', label: '打卡日历' },
-            { value: 'titles', label: '称号图鉴' },
-            { value: 'assessment', label: '考核与积分' },
-            { value: 'report', label: '周报工作台' },
-          ]}
-        />
-      </header>
+    <div className={styles.shell}>
+      {/* 主区：高密度一页总览 */}
+      <div className={styles.workspace}>
+        <header className={styles.header}>
+          <div>
+            <div className={styles.titleRow}>
+              <h1 className={styles.heading}>成长与记录</h1>
+              <span className={styles.weekPill}>{weeklyStats?.week ?? currentWeek}</span>
+            </div>
+            <p className={styles.subheading}>
+              本周考核进度、打卡热力图与防丢周报一页总览 · 点击右上角或卡片可滑出右侧明细、称号图鉴与历史考核
+            </p>
+          </div>
+          <div className={styles.headerQuickActions}>
+            <button
+              type="button"
+              className={`${styles.quickChip} ${drawer === 'records' ? styles.quickChipActive : ''}`}
+              onClick={() => toggleDrawer('records')}
+            >
+              <Clock size={13} />
+              <span>打卡明细 ({records.length})</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.quickChip} ${drawer === 'titles' ? styles.quickChipActive : ''}`}
+              onClick={() => toggleDrawer('titles')}
+            >
+              <Award size={13} />
+              <span>称号图鉴</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.quickChip} ${drawer === 'history' ? styles.quickChipActive : ''}`}
+              onClick={() => toggleDrawer('history')}
+            >
+              <TrendingUp size={13} />
+              <span>历史考核</span>
+            </button>
+          </div>
+        </header>
 
-      {segment === 'titles' && (
-        <div className={styles.titlesSection}>
-          <Card
-            title={
-              <span className={styles.titleCardHeading}>
-                <Award size={16} /> 当前对外展示称号
+        {/* 顶部 4 卡紧凑指标条 */}
+        <section className={styles.kpiStrip} aria-label="核心成长指标">
+          <div className={styles.kpiCard}>
+            <div className={styles.kpiHead}>
+              <span className={styles.kpiLabel}>
+                <Clock size={13} /> 本周累计专注
               </span>
-            }
-            description="佩戴的荣誉称号会实时展示在今日专注、工作室在岗与本周排行榜中；状态预警类称号将自动亮牌。"
-            extra={
-              myTitles?.equippedTitleId ? (
+              <span className={styles.kpiPct}>{progressPct}%</span>
+            </div>
+            <div className={styles.kpiValue}>{formatReadableDuration(weekTotalSeconds)}</div>
+            <div className={styles.progressTrack} aria-hidden="true">
+              <div
+                className={`${styles.progressFill} ${weeklyStats?.qualified ? styles.progressFillDone : ''}`}
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          </div>
+
+          <div className={styles.kpiCard}>
+            <div className={styles.kpiHead}>
+              <span className={styles.kpiLabel}>
+                <Target size={13} /> 考核状态
+              </span>
+              <span
+                className={`${styles.statusPill} ${
+                  weeklyStats?.qualified ? styles.statusPillDone : styles.statusPillPending
+                }`}
+              >
+                {weeklyStats?.qualified ? '已达标' : '冲刺中'}
+              </span>
+            </div>
+            <div className={styles.kpiValueSmall}>
+              {weeklyStats?.qualified
+                ? '本周考核已完成'
+                : `距目标还差 ${formatReadableDuration(remainingSeconds)}`}
+            </div>
+            <div className={styles.kpiSub}>
+              周目标 {formatReadableDuration(weekTargetSeconds)} · 点击右上查看历史
+            </div>
+          </div>
+
+          <div className={styles.kpiCard}>
+            <div className={styles.kpiHead}>
+              <span className={styles.kpiLabel}>
+                <Coins size={13} /> 乐币与卡牌
+              </span>
+            </div>
+            <div className={styles.kpiValue}>
+              {points?.totalPoints ?? 0}
+              <span className={styles.kpiUnit}> 分</span>
+            </div>
+            <div className={styles.kpiSub}>当前持有卡牌 {points?.cardsCount ?? 0} 张</div>
+          </div>
+
+          <button
+            type="button"
+            className={`${styles.kpiCard} ${styles.kpiCardClickable}`}
+            onClick={() => toggleDrawer('titles')}
+          >
+            <div className={styles.kpiHead}>
+              <span className={styles.kpiLabel}>
+                <Award size={13} /> 对外亮牌称号
+              </span>
+              {totalTitleCount > 0 && (
+                <span className={styles.kpiHint}>
+                  {isTitleEligible ? `${unlockedTitleCount}/${totalTitleCount}` : `图鉴 ${totalTitleCount} 项`}
+                </span>
+              )}
+            </div>
+            <div className={styles.kpiBadgesRow}>
+              {myTitles && myTitles.displayTitles.length > 0 ? (
+                <TitleBadgeList titles={myTitles.displayTitles} size="xs" maxVisible={2} />
+              ) : (
+                <span className={styles.kpiMuted}>
+                  {!isTitleEligible ? '仅大一至大三参与评选' : '暂未点亮称号'}
+                </span>
+              )}
+            </div>
+            <div className={styles.kpiSub}>
+              {isTitleEligible ? '点击展开右侧称号图鉴与佩戴设置 →' : '点击展开右侧浏览全部称号图鉴 →'}
+            </div>
+          </button>
+        </section>
+
+        {/* 主区双栏：左打卡热力图 + 右周报工作台 */}
+        <div className={styles.bentoGrid}>
+          <section className={`${styles.panel} ${styles.calendarPanel}`}>
+            <div className={styles.panelHead}>
+              <span className={styles.panelTitle}>月度打卡热力图</span>
+              <button
+                type="button"
+                className={styles.panelLink}
+                onClick={() => {
+                  setRecordFilterDate(null);
+                  setDrawer('records');
+                }}
+              >
+                全部明细 ({records.length}) →
+              </button>
+            </div>
+            <ActivityCalendar
+              month={month}
+              days={calendarDays}
+              today={todayIso()}
+              selectedDate={selectedDate}
+              onDateSelect={handleCalendarSelect}
+              onMonthChange={setMonth}
+              aria-label="月度考勤打卡热力图"
+            />
+            <div className={styles.dayPreview}>
+              <div className={styles.dayPreviewHead}>
+                <span className={styles.dayPreviewTitle}>{selectedDate} 打卡摘要</span>
+                {selectedDayRecords.length > 0 && (
+                  <button
+                    type="button"
+                    className={styles.panelLink}
+                    onClick={() => {
+                      setRecordFilterDate(selectedDate);
+                      setDrawer('records');
+                    }}
+                  >
+                    侧栏展开 ({selectedDayRecords.length})
+                  </button>
+                )}
+              </div>
+              {selectedDayRecords.length === 0 ? (
+                <div className={styles.dayPreviewEmpty}>当天暂无打卡记录，点击有色日期可快速查看</div>
+              ) : (
+                <div className={styles.dayPreviewList}>
+                  {selectedDayRecords.slice(0, 3).map((rec) => (
+                    <div key={rec.id} className={styles.dayPreviewRow}>
+                      <span className={styles.dayPreviewTime}>
+                        {new Date(rec.checkInTime).toLocaleTimeString('zh-CN', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                        {' — '}
+                        {rec.checkOutTime
+                          ? new Date(rec.checkOutTime).toLocaleTimeString('zh-CN', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : '进行中'}
+                      </span>
+                      <span className={styles.dayPreviewDur}>
+                        {formatReadableDuration(rec.durationSeconds)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className={`${styles.panel} ${styles.reportPanel}`}>
+            <div className={styles.panelHead}>
+              <div className={styles.panelTitleWrap}>
+                <span className={styles.panelTitle}>
+                  <FileText size={14} /> 本周周报工作台（{currentWeek}）
+                </span>
+                <span className={styles.draftHint}>
+                  {draftSavedAt
+                    ? `SQLite 本地草稿自动保存于 ${new Date(draftSavedAt).toLocaleTimeString('zh-CN')}`
+                    : '输入自动防抖保存至本地 SQLite，断网或重启不丢字'}
+                </span>
+              </div>
+              <Button
+                variant="filled"
+                size="small"
+                icon={<Save size={14} />}
+                loading={submittingReport}
+                disabled={!auth.authenticated || !reportText.trim()}
+                onClick={() => void handleSubmitReport()}
+              >
+                提交周报
+              </Button>
+            </div>
+            <div className={styles.reportBody}>
+              <TextArea
+                rows={13}
+                placeholder="记录本周完成的代码提交、算法训练、文档沉淀与下周计划..."
+                value={reportText}
+                onValueChange={setReportText}
+              />
+            </div>
+          </section>
+        </div>
+      </div>
+
+      {/* 飞书式滑出右侧抽屉（点击右缘图标展开） */}
+      {drawer !== null && (
+        <aside className={styles.sideDrawer} aria-label="成长详情侧栏">
+          <div className={styles.drawerHead}>
+            <div className={styles.drawerTitle}>
+              {drawer === 'records' && (
+                <>
+                  <Clock size={15} />
+                  <span>{recordFilterDate ? `${recordFilterDate} 打卡明细` : '全部打卡明细'}</span>
+                </>
+              )}
+              {drawer === 'titles' && (
+                <>
+                  <Award size={15} />
+                  <span>工作室称号图鉴</span>
+                </>
+              )}
+              {drawer === 'history' && (
+                <>
+                  <TrendingUp size={15} />
+                  <span>历史周考核记录</span>
+                </>
+              )}
+            </div>
+            <div className={styles.drawerHeadRight}>
+              {drawer === 'records' && recordFilterDate && (
+                <button
+                  type="button"
+                  className={styles.panelLink}
+                  onClick={() => setRecordFilterDate(null)}
+                >
+                  看全部
+                </button>
+              )}
+              {drawer === 'titles' && myTitles?.equippedTitleId && (
                 <Button
                   variant="glass"
                   size="small"
@@ -157,183 +501,182 @@ export function PunchGrowthPage(): JSX.Element {
                     setEquippingId(null);
                   }}
                 >
-                  恢复自动佩戴
+                  恢复自动
                 </Button>
-              ) : (
-                <Tag tone="neutral" icon={<Sparkles size={13} />}>
-                  已解锁 {myTitles?.catalog.filter((c) => c.unlocked).length ?? 0} /{' '}
-                  {myTitles?.catalog.length ?? 11}
-                </Tag>
-              )
-            }
-          >
-            {myTitles && myTitles.displayTitles.length > 0 ? (
-              <div className={styles.equippedPreviewRow}>
-                <TitleBadgeList titles={myTitles.displayTitles} size="md" maxVisible={5} />
-              </div>
-            ) : (
-              <p className={styles.muted}>
-                暂未佩戴任何称号，达成下方任意条件后即可自动点亮专属彩色标签！
-              </p>
-            )}
-          </Card>
-
-          {!myTitles || myTitles.catalog.length === 0 ? (
-            <Card>
-              <Empty
-                title={auth.authenticated ? '正在同步工作室称号图鉴…' : '登录后查看你的称号进度'}
-                description="如刚完成服务端更新，请稍候片刻或切换页面刷新"
-              />
-            </Card>
-          ) : (
-            <div className={styles.titlesGrid}>
-              {myTitles.catalog.map((item) => {
-                const isBusy = equippingId === item.id;
-                return (
-                  <div
-                    key={item.id}
-                    className={`${styles.titleCard} ${
-                      item.unlocked ? styles.titleCardUnlocked : ''
-                    } ${item.equipped ? styles.titleCardEquipped : ''}`}
-                  >
-                    <div className={styles.titleCardTop}>
-                      <TitleBadge title={item} size="md" dimmed={!item.unlocked} />
-                      <span className={styles.proposerTag}>提出人：{item.proposer}</span>
-                    </div>
-                    <p className={styles.titleDesc}>{item.description}</p>
-                    <div className={styles.titleCardFooter}>
-                      <span className={styles.titleProgress}>
-                        {item.progressText || (item.unlocked ? '已解锁' : '未解锁')}
-                      </span>
-                      {item.forced ? (
-                        <Tag tone={item.unlocked ? 'warning' : 'neutral'}>
-                          {item.unlocked ? '自动亮牌中' : '状态预警'}
-                        </Tag>
-                      ) : item.equipped ? (
-                        <Tag tone="success" icon={<Check size={12} />}>
-                          佩戴中
-                        </Tag>
-                      ) : item.unlocked ? (
-                        <Button
-                          variant="filled"
-                          size="small"
-                          loading={isBusy}
-                          onClick={async () => {
-                            setEquippingId(item.id);
-                            await equipTitle(item.id);
-                            setEquippingId(null);
-                          }}
-                        >
-                          佩戴称号
-                        </Button>
-                      ) : (
-                        <Tag tone="neutral">未解锁</Tag>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              )}
+              <button
+                type="button"
+                className={styles.drawerCloseBtn}
+                aria-label="收起侧栏"
+                onClick={() => setDrawer(null)}
+              >
+                <X size={15} />
+              </button>
             </div>
-          )}
-        </div>
-      )}
+          </div>
 
-      {segment === 'calendar' && (
-        <div className={styles.twoCol}>
-          <ActivityCalendar
-            month={month}
-            days={calendarDays}
-            today={todayIso()}
-            selectedDate={selectedDate}
-            onDateSelect={setSelectedDate}
-            onMonthChange={setMonth}
-            aria-label="月度考勤打卡热力图"
-          />
-          <Card title={`近期打卡明细（${records.length} 条）`}>
-            {records.length === 0 ? (
-              <Empty title="暂无打卡记录" description="完成一次签退后将在此展示" />
-            ) : (
-              <ul className={styles.recordList}>
-                {records.slice(0, 12).map((item) => (
-                  <li key={item.id} className={styles.recordRow}>
-                    <div>
-                      <div className={styles.recordDate}>
-                        {new Date(item.checkInTime).toLocaleDateString('zh-CN')}
+          <div className={styles.drawerBody}>
+            {drawer === 'records' && (
+              drawerRecords.length === 0 ? (
+                <Empty
+                  title="暂无打卡记录"
+                  description={recordFilterDate ? '该日期下暂无签退记录' : '完成一次签退后将在此展示'}
+                />
+              ) : (
+                <ul className={styles.recordList}>
+                  {drawerRecords.map((item) => (
+                    <li key={item.id} className={styles.recordRow}>
+                      <div>
+                        <div className={styles.recordDate}>
+                          {new Date(item.checkInTime).toLocaleDateString('zh-CN')}
+                        </div>
+                        <div className={styles.recordTime}>
+                          {new Date(item.checkInTime).toLocaleTimeString('zh-CN', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                          {' — '}
+                          {item.checkOutTime
+                            ? new Date(item.checkOutTime).toLocaleTimeString('zh-CN', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                            : '进行中'}
+                        </div>
                       </div>
-                      <div className={styles.recordTime}>
-                        {new Date(item.checkInTime).toLocaleTimeString('zh-CN', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                        {' — '}
-                        {item.checkOutTime
-                          ? new Date(item.checkOutTime).toLocaleTimeString('zh-CN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
-                          : '进行中'}
-                      </div>
-                    </div>
-                    <Tag tone="info">{formatReadableDuration(item.durationSeconds)}</Tag>
-                  </li>
-                ))}
-              </ul>
+                      <span className={styles.durationPill}>
+                        {formatReadableDuration(item.durationSeconds)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )
             )}
-          </Card>
-        </div>
-      )}
 
-      {segment === 'assessment' && (
-        <div className={styles.metricGrid}>
-          <Card title="本周累计专注">
-            <Statistic
-              title={weeklyStats?.week ?? currentWeek}
-              value={formatReadableDuration(weeklyStats?.totalDurationSeconds ?? 0)}
-            />
-          </Card>
-          <Card title="考核达标状态">
-            <Tag tone={weeklyStats?.qualified ? 'success' : 'warning'}>
-              {weeklyStats?.qualified ? '本周已达标' : '继续加油，尚未达标'}
-            </Tag>
-            <p className={styles.muted}>
-              目标时长：{formatReadableDuration(weeklyStats?.targetDurationSeconds ?? 18 * 3600)}
-            </p>
-          </Card>
-          <Card title="积分与卡牌">
-            <Statistic title="当前积分" value={points?.totalPoints ?? 0} suffix="分" />
-            <p className={styles.muted}>持有卡牌：{points?.cardsCount ?? 0} 张</p>
-          </Card>
-        </div>
-      )}
+            {drawer === 'titles' && (
+              !myTitles || myTitles.catalog.length === 0 ? (
+                <Empty
+                  title={auth.authenticated ? '正在同步工作室称号图鉴…' : '登录后查看称号图鉴'}
+                  description="同步完成后即可浏览工作室全部称号说明与达成条件"
+                />
+              ) : (
+                <div className={styles.drawerTitlesList}>
+                  <div className={styles.drawerSubBanner}>
+                    <Sparkles size={13} />
+                    <span>
+                      {isTitleEligible
+                        ? `已解锁 ${unlockedTitleCount} / ${totalTitleCount} · 佩戴后会实时展示在工作室周榜中`
+                        : `共 ${totalTitleCount} 项工作室称号 · 当前届别仅作图鉴浏览（大一至大三可解锁佩戴）`}
+                    </span>
+                  </div>
+                  {myTitles.catalog.map((item) => {
+                    const isBusy = equippingId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        className={`${styles.titleCard} ${
+                          item.unlocked ? styles.titleCardUnlocked : ''
+                        } ${item.equipped ? styles.titleCardEquipped : ''}`}
+                      >
+                        <div className={styles.titleCardTop}>
+                          <TitleBadge
+                            title={item}
+                            size="sm"
+                            dimmed={isTitleEligible && !item.unlocked}
+                          />
+                          <span className={styles.proposerTag}>提出：{item.proposer}</span>
+                        </div>
+                        <p className={styles.titleDesc}>{item.description}</p>
+                        <div className={styles.titleCardFooter}>
+                          <span className={styles.titleProgress}>
+                            {item.progressText || (item.unlocked ? '已解锁' : '未解锁')}
+                          </span>
+                          {!isTitleEligible ? (
+                            <Tag tone="neutral">{item.forced ? '状态类' : '荣誉图鉴'}</Tag>
+                          ) : item.forced ? (
+                            <Tag tone={item.unlocked ? 'warning' : 'neutral'}>
+                              {item.unlocked ? '自动亮牌中' : '状态预警'}
+                            </Tag>
+                          ) : item.equipped ? (
+                            <Tag tone="success" icon={<Check size={12} />}>
+                              佩戴中
+                            </Tag>
+                          ) : item.unlocked ? (
+                            <Button
+                              variant="filled"
+                              size="small"
+                              loading={isBusy}
+                              onClick={async () => {
+                                setEquippingId(item.id);
+                                await equipTitle(item.id);
+                                setEquippingId(null);
+                              }}
+                            >
+                              佩戴
+                            </Button>
+                          ) : (
+                            <Tag tone="neutral">未解锁</Tag>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )
+            )}
 
-      {segment === 'report' && (
-        <Card
-          title={`本周周报（${currentWeek}）`}
-          description={
-            draftSavedAt
-              ? `SQLite 本地草稿已自动保存于 ${new Date(draftSavedAt).toLocaleTimeString('zh-CN')}`
-              : '输入内容将自动防抖保存至本地 SQLite，断网或重启不丢字'
-          }
-          extra={
-            <Button
-              variant="filled"
-              size="small"
-              icon={<Save size={15} />}
-              loading={submittingReport}
-              disabled={!auth.authenticated || !reportText.trim()}
-              onClick={handleSubmitReport}
-            >
-              提交周报
-            </Button>
-          }
-        >
-          <TextArea
-            rows={12}
-            placeholder="记录本周完成的代码提交、算法训练、文档沉淀与下周计划..."
-            value={reportText}
-            onValueChange={setReportText}
-          />
-        </Card>
+            {drawer === 'history' && (
+              historyLoading && weeklyHistory.length === 0 ? (
+                <Empty title="正在拉取历史周考核…" />
+              ) : weeklyHistory.length === 0 ? (
+                <Empty title="暂无历史周考核记录" description="产生有效打卡记录后将按周汇总展示" />
+              ) : (
+                <ul className={styles.historyList}>
+                  {weeklyHistory.map((row) => {
+                    const pct =
+                      row.weeklyGoalSeconds > 0
+                        ? Math.min(100, Math.round((row.totalDurationSeconds / row.weeklyGoalSeconds) * 100))
+                        : 100;
+                    return (
+                      <li key={row.weekKey} className={styles.historyRow}>
+                        <div className={styles.historyTop}>
+                          <span className={styles.historyWeek}>{row.weekKey}</span>
+                          <span
+                            className={`${styles.statusPill} ${
+                              row.assessmentComplete ? styles.statusPillDone : styles.statusPillPending
+                            }`}
+                          >
+                            {row.assessmentComplete ? (
+                              <>
+                                <CheckCircle2 size={11} /> 达标
+                              </>
+                            ) : (
+                              `${pct}%`
+                            )}
+                          </span>
+                        </div>
+                        <div className={styles.historyMeta}>
+                          <strong>{formatReadableDuration(row.totalDurationSeconds)}</strong>
+                          <span>
+                            目标 {formatReadableDuration(row.weeklyGoalSeconds)} · {row.sessionsCount} 次打卡
+                          </span>
+                        </div>
+                        <div className={styles.progressTrack} aria-hidden="true">
+                          <div
+                            className={`${styles.progressFill} ${
+                              row.assessmentComplete ? styles.progressFillDone : ''
+                            }`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )
+            )}
+          </div>
+        </aside>
       )}
     </div>
   );

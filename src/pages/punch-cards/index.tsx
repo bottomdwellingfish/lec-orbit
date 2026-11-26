@@ -16,6 +16,7 @@ import type {
   CardRarity,
 } from '@shared/punch';
 import { formatReadableDuration } from '@shared/punch';
+import { MemberCombobox, type MemberComboboxOption } from '@/components/MemberCombobox';
 import { notifyToast } from '@/services/orbitToast';
 import { punchApi } from '@/services/punchApi';
 import { useOrbitStore } from '@/stores/useOrbitStore';
@@ -92,6 +93,7 @@ export function PunchCardsPage(): JSX.Element {
   const auth = useOrbitStore((s) => s.auth);
   const game = useOrbitStore((s) => s.cardGame);
   const error = useOrbitStore((s) => s.cardGameError);
+  const studioMembers = useOrbitStore((s) => s.studioMembers);
   const setGame = useOrbitStore((s) => s.setCardGame);
   const refreshCardGame = useOrbitStore((s) => s.refreshCardGame);
   const setLoginModalOpen = useOrbitStore((s) => s.setLoginModalOpen);
@@ -122,6 +124,26 @@ export function PunchCardsPage(): JSX.Element {
     }
     return map;
   }, [game]);
+
+  /** 将卡牌玩家列表与 LecSSO 成员目录聚合，补充头像并确保优先展示真实姓名。 */
+  const memberOptions = useMemo<MemberComboboxOption[]>(() => {
+    const byHandle = new Map<string, { name?: string | null; avatar?: string | null }>();
+    for (const m of studioMembers) {
+      if (m.username) {
+        byHandle.set(m.username.trim().toLowerCase(), { name: m.name, avatar: m.avatar });
+      }
+    }
+    return (game?.players ?? []).map((p) => {
+      const sso = p.username ? byHandle.get(p.username.trim().toLowerCase()) : undefined;
+      return {
+        id: p.id,
+        name: sso?.name?.trim() || p.displayName,
+        username: p.username,
+        enrollYear: p.enrollYear,
+        avatar: sso?.avatar ?? null,
+      };
+    });
+  }, [game?.players, studioMembers]);
 
   const sortedCollection = useMemo(() => {
     const list = [...(game?.collection ?? [])];
@@ -290,6 +312,16 @@ export function PunchCardsPage(): JSX.Element {
     actionMode === 'gift' ||
     (selectedCard?.targetMode !== undefined && selectedCard.targetMode !== 'none');
 
+  const costPerDraw = game?.coinCostPerDraw ?? 6;
+  const freePool = (game?.freeRemaining ?? 0) + (game?.giftDraws ?? 0);
+  const singlePaidDraws = Math.max(0, 1 - freePool);
+  const tenPaidDraws = Math.max(0, 10 - freePool);
+  const singleCost = singlePaidDraws * costPerDraw;
+  const tenCost = tenPaidDraws * costPerDraw;
+  const weeklyPaidUsed = game?.weeklyPaidDrawsUsed ?? 0;
+  const weeklyPaidLimit = game?.weeklyPaidDrawsLimit ?? 20;
+  const paidQuotaFull = weeklyPaidUsed >= weeklyPaidLimit;
+
   return (
     <div className={styles.page}>
       <header className={styles.header}>
@@ -321,10 +353,13 @@ export function PunchCardsPage(): JSX.Element {
           <Card className={styles.heroCard}>
             <div className={styles.heroStats}>
               <div className={styles.statBlock}>
-                <span className={styles.statLabel}>可用积分</span>
+                <span className={styles.statLabel}>
+                  {game.points.rule === 'unified-coin-v2' ? '可用乐币' : '可用积分'}
+                </span>
                 <strong className={styles.statValue}>{game.points.balance}</strong>
                 <span className={styles.statHint}>
                   本周累计 {game.points.earned} · 已消费 {game.points.spent}
+                  {typeof game.coinCostPerDraw === 'number' ? ` · ${game.coinCostPerDraw} 乐币/抽` : ''}
                 </span>
               </div>
               <div className={styles.statBlock}>
@@ -334,6 +369,9 @@ export function PunchCardsPage(): JSX.Element {
                 </strong>
                 <span className={styles.statHint}>
                   免费 {game.freeRemaining} 次 · 赠礼 {game.giftDraws} 次
+                  {typeof game.weeklyPaidDrawsLimit === 'number'
+                    ? ` · 付费已用 ${game.weeklyPaidDrawsUsed ?? 0}/${game.weeklyPaidDrawsLimit}`
+                    : ''}
                 </span>
               </div>
               <div className={styles.statBlock}>
@@ -348,25 +386,36 @@ export function PunchCardsPage(): JSX.Element {
               </div>
             </div>
 
-            <div className={styles.drawActions}>
-              <Button
-                variant="glass"
-                icon={<Sparkles size={15} />}
-                loading={busyAction === 'draw-1'}
-                disabled={Boolean(busyAction)}
-                onClick={() => void handleDraw(1)}
-              >
-                单抽一次
-              </Button>
-              <Button
-                variant="filled"
-                icon={<Sparkles size={15} />}
-                loading={busyAction === 'draw-10'}
-                disabled={Boolean(busyAction)}
-                onClick={() => void handleDraw(10)}
-              >
-                十连抽卡
-              </Button>
+            <div className={styles.drawBar}>
+              <div className={styles.drawActions}>
+                <Button
+                  variant="glass"
+                  icon={<Sparkles size={15} />}
+                  loading={busyAction === 'draw-1'}
+                  disabled={Boolean(busyAction)}
+                  onClick={() => void handleDraw(1)}
+                >
+                  {singleCost === 0 ? '单抽一次（免费）' : `单抽一次（${singleCost} 分）`}
+                </Button>
+                <Button
+                  variant="filled"
+                  icon={<Sparkles size={15} />}
+                  loading={busyAction === 'draw-10'}
+                  disabled={Boolean(busyAction)}
+                  onClick={() => void handleDraw(10)}
+                >
+                  {tenCost === 0 ? '十连抽卡（免费）' : `十连抽卡（${tenCost} 分）`}
+                </Button>
+              </div>
+              <div className={styles.drawRuleHint}>
+                <span>
+                  抽卡定价：<strong>{costPerDraw} 积分 / 抽</strong>（优先消耗免费与赠礼次数）
+                </span>
+                <span className={paidQuotaFull ? styles.drawQuotaFull : undefined}>
+                  本周付费额度：{weeklyPaidUsed}/{weeklyPaidLimit} 抽
+                  {paidQuotaFull ? '（已满额，下周一重置）' : ''}
+                </span>
+              </div>
             </div>
           </Card>
 
@@ -564,39 +613,21 @@ export function PunchCardsPage(): JSX.Element {
 
                 {needsTarget && (
                   <div className={styles.selectRow}>
-                    <label className={styles.selectField}>
-                      <span>{actionMode === 'gift' ? '选择受赠队友' : '选择目标成员'}</span>
-                      <select
-                        className={styles.select}
-                        value={targetId}
-                        onChange={(e) => setTargetId(e.target.value)}
-                      >
-                        <option value="">请选择成员…</option>
-                        {(game?.players ?? []).map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.displayName}（@{p.username} · {p.enrollYear}级）
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <MemberCombobox
+                      label={actionMode === 'gift' ? '选择受赠队友' : '选择目标成员'}
+                      placeholder="输入姓名、Handle 或届别搜索…"
+                      value={targetId}
+                      options={memberOptions}
+                      onChange={setTargetId}
+                    />
                     {actionMode === 'use' && selectedCard.targetMode === 'two' && (
-                      <label className={styles.selectField}>
-                        <span>第二目标成员</span>
-                        <select
-                          className={styles.select}
-                          value={secondTargetId}
-                          onChange={(e) => setSecondTargetId(e.target.value)}
-                        >
-                          <option value="">请选择第二目标…</option>
-                          {(game?.players ?? [])
-                            .filter((p) => p.id !== targetId)
-                            .map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.displayName}（@{p.username}）
-                              </option>
-                            ))}
-                        </select>
-                      </label>
+                      <MemberCombobox
+                        label="第二目标成员"
+                        placeholder="搜索第二目标成员…"
+                        value={secondTargetId}
+                        options={memberOptions.filter((p) => p.id !== targetId)}
+                        onChange={setSecondTargetId}
+                      />
                     )}
                   </div>
                 )}

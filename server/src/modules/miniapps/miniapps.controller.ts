@@ -22,7 +22,33 @@ import { CaptainGuard } from '../../common/guards/captain.guard.js';
 import { SsoAuthGuard } from '../../common/guards/sso-auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { MINIAPP_MAX_BUNDLE_BYTES, type MiniAppManifest } from './miniapp-validator.util.js';
+import { MiniAppsEngagementService } from './miniapps-engagement.service.js';
 import { MiniAppsService } from './miniapps.service.js';
+
+const PresenceSchema = z.object({
+  appName: z.string().trim().max(80).optional(),
+  appType: z.string().trim().max(32).optional(),
+});
+
+const EndSessionSchema = z.object({
+  durationSeconds: z.number().min(0).max(86400).optional(),
+});
+
+const RateAppSchema = z.object({
+  score: z.number().int().min(1).max(5),
+  comment: z.string().max(200).optional(),
+});
+
+const SendInviteSchema = z.object({
+  toUserIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一位队友').max(8, '单次最多邀请 8 位队友'),
+  roomId: z.string().trim().min(1, '请提供房间号').max(128, '房间号最长 128 字符'),
+  roomName: z.string().trim().max(64).optional(),
+  message: z.string().trim().max(140).optional(),
+  mode: z.enum(['sidepanel', 'workspace', 'standalone']).optional(),
+  expiresInSeconds: z.number().int().min(60).max(3600).optional(),
+  meta: z.record(z.string(), z.unknown()).optional(),
+  appNameHint: z.string().trim().max(80).optional(),
+});
 
 const UuidSchema = z.string().uuid('无效的版本 ID');
 
@@ -55,7 +81,10 @@ interface UploadedBinaryFile {
 @Controller('api/v1/apps')
 @UseGuards(SsoAuthGuard, CaptainGuard)
 export class MiniAppsController {
-  constructor(private readonly service: MiniAppsService) {}
+  constructor(
+    private readonly service: MiniAppsService,
+    private readonly engagement: MiniAppsEngagementService,
+  ) {}
 
   @Get()
   async list(
@@ -76,9 +105,85 @@ export class MiniAppsController {
     return { items };
   }
 
+  /** 当前正在游玩工坊作品的在线成员动态列表（必须定义在 :id 路由之前）。 */
+  @Get('presence')
+  async listPresence() {
+    const items = await this.engagement.listActivePresence();
+    return { items };
+  }
+
+  /** 工坊游戏/应用排行榜（支持 composite 综合 / rating 高分 / plays 热门）。 */
+  @Get('leaderboard')
+  getLeaderboard(
+    @CurrentUser() user: AuthUser,
+    @Query('sort') sort?: string,
+    @Query('type') type?: string,
+  ) {
+    return this.engagement.getLeaderboard(user, {
+      sort: sort?.trim(),
+      type: type?.trim(),
+    });
+  }
+
   @Get(':id')
   getDetail(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.service.getDetail(user, id.trim());
+  }
+
+  @Get(':id/stats')
+  getStats(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.engagement.getAppStats(user, id.trim());
+  }
+
+  @Post(':id/presence')
+  @HttpCode(HttpStatus.OK)
+  reportPresence(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Body() rawBody: unknown,
+  ) {
+    const body = PresenceSchema.parse(rawBody ?? {});
+    return this.engagement.reportPresence(user, appId.trim(), body);
+  }
+
+  @Delete(':id/presence')
+  @HttpCode(HttpStatus.OK)
+  clearPresence(@CurrentUser() user: AuthUser, @Param('id') appId: string) {
+    return this.engagement.clearPresence(user.userId, appId.trim());
+  }
+
+  @Post(':id/play-session/end')
+  @HttpCode(HttpStatus.OK)
+  endPlaySession(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Body() rawBody: unknown,
+  ) {
+    const body = EndSessionSchema.parse(rawBody ?? {});
+    return this.engagement.endPlaySession(user, appId.trim(), body.durationSeconds);
+  }
+
+  @Post(':id/rate')
+  @HttpCode(HttpStatus.OK)
+  submitRating(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Body() rawBody: unknown,
+  ) {
+    const body = RateAppSchema.parse(rawBody ?? {});
+    return this.engagement.submitRating(user, appId.trim(), body.score, body.comment);
+  }
+
+  /** 向指定工作室成员发送游戏组队房间邀请，对方点「接受并进房」后直接打开对应作品并进入房间。 */
+  @Post(':id/invites')
+  @HttpCode(HttpStatus.CREATED)
+  sendRoomInvites(
+    @CurrentUser() user: AuthUser,
+    @Param('id') appId: string,
+    @Body() rawBody: unknown,
+  ) {
+    const body = SendInviteSchema.parse(rawBody ?? {});
+    return this.engagement.sendRoomInvites(user, appId.trim(), body);
   }
 
   @Post('upload')

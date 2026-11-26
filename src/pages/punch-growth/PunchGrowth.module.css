@@ -1,151 +1,520 @@
-.page {
+.shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 24px 28px 32px;
-  height: 100%;
+  gap: 14px;
+  padding: 18px 20px 24px;
   overflow-y: auto;
 }
 
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .heading {
   margin: 0;
-  font-size: 26px;
-  font-weight: 650;
+  font-size: 22px;
+  font-weight: 700;
   letter-spacing: -0.02em;
+}
+
+.weekPill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  font-family: var(--orbit-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--orbit-text-muted);
 }
 
 .subheading {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--orbit-text-muted);
 }
 
-.twoCol {
-  display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
+.headerQuickActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
-.metricGrid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+.quickChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+  color: var(--orbit-text-muted);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+
+  &:hover {
+    color: var(--orbit-text);
+    border-color: rgba(10, 132, 255, 0.36);
+  }
 }
 
-.recordList {
+.quickChipActive {
+  background: rgba(10, 132, 255, 0.14);
+  border-color: rgba(10, 132, 255, 0.4);
+  color: #0a84ff;
+  font-weight: 650;
+}
+
+/* ── 顶部 4 卡紧凑指标条 ── */
+.kpiStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kpiCard {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  text-align: left;
+  color: inherit;
+  min-width: 0;
+}
+
+.kpiCardClickable {
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+
+  &:hover {
+    border-color: rgba(10, 132, 255, 0.38);
+    background: var(--orbit-surface-strong);
+  }
+}
+
+.kpiHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.kpiLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--orbit-text-muted);
+}
+
+.kpiPct,
+.kpiHint {
+  font-family: var(--orbit-mono);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--orbit-text-muted);
+}
+
+.kpiValue {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--orbit-text);
+  line-height: 1.2;
+}
+
+.kpiUnit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--orbit-text-muted);
+}
+
+.kpiValueSmall {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--orbit-text);
+  line-height: 1.3;
+}
+
+.kpiSub {
+  font-size: 11px;
+  color: var(--orbit-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kpiBadgesRow {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+}
+
+.kpiMuted {
+  font-size: 12px;
+  color: var(--orbit-text-muted);
+}
+
+.progressTrack {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--orbit-border);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0a84ff, #38bdf8);
+  transition: width 220ms ease;
+}
+
+.progressFillDone {
+  background: linear-gradient(90deg, #16a34a, #4ade80);
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.statusPillDone {
+  background: rgba(22, 163, 74, 0.14);
+  color: #15803d;
+}
+:global([data-theme='dark']) .statusPillDone {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.statusPillPending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+}
+:global([data-theme='dark']) .statusPillPending {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fde68a;
+}
+
+/* ── 主区双栏 Bento ── */
+.bentoGrid {
+  display: grid;
+  grid-template-columns: minmax(300px, 370px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  flex: 1;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--orbit-surface);
+  border: 1px solid var(--orbit-border);
+  min-width: 0;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.panelTitleWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.panelTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.draftHint {
+  font-size: 11px;
+  color: var(--orbit-text-muted);
+}
+
+.panelLink {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0a84ff;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.dayPreview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--orbit-border);
+}
+
+.dayPreviewHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dayPreviewTitle {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.dayPreviewEmpty {
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+}
+
+.dayPreviewList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dayPreviewRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+  font-size: 12px;
+}
+
+.dayPreviewTime {
+  color: var(--orbit-text-muted);
+  font-family: var(--orbit-mono);
+  font-size: 11.5px;
+}
+
+.dayPreviewDur {
+  font-weight: 600;
+  color: var(--orbit-text);
+}
+
+.reportBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 飞书式滑出侧栏 + 右缘竖排图标栏 ── */
+.sideDrawer {
+  width: 364px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--orbit-border);
+  background: var(--orbit-surface);
+  min-height: 0;
+}
+
+.drawerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--orbit-border);
+  flex-shrink: 0;
+}
+
+.drawerTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.drawerHeadRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawerCloseBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--orbit-text-muted);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--orbit-surface-strong);
+    color: var(--orbit-text);
+  }
+}
+
+.drawerBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 20px;
+  scrollbar-width: thin;
+}
+
+/* ── 侧栏列表项 ── */
+.recordList,
+.historyList {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
 }
 
 .recordRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--orbit-surface);
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--orbit-surface-strong);
   border: 1px solid var(--orbit-border);
 }
 
 .recordDate {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
 .recordTime {
-  font-size: 12px;
+  font-family: var(--orbit-mono);
+  font-size: 11px;
   color: var(--orbit-text-muted);
 }
 
-.muted {
-  margin: 10px 0 0;
-  font-size: 13px;
-  color: var(--orbit-text-muted);
+.durationPill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.12);
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+:global([data-theme='dark']) .durationPill {
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
 }
 
-.reportMsg {
-  margin: 12px 0 0;
-  font-size: 13px;
-  color: var(--orbit-accent);
-}
-
-.titlesSection {
+.drawerTitlesList {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 9px;
 }
 
-.titleCardHeading {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.equippedPreviewRow {
+.drawerSubBanner {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 4px 0;
-}
-
-.titlesGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
 }
 
 .titleCard {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: var(--orbit-surface);
+  gap: 7px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: var(--orbit-surface-strong);
   border: 1px solid var(--orbit-border);
-  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
 }
 
 .titleCardUnlocked {
-  background: var(--orbit-surface-strong);
+  border-color: rgba(10, 132, 255, 0.22);
 }
 
 .titleCardEquipped {
-  border-color: rgba(10, 132, 255, 0.45);
-  box-shadow: 0 6px 20px rgba(10, 132, 255, 0.08);
+  border-color: rgba(10, 132, 255, 0.5);
+  box-shadow: 0 4px 14px rgba(10, 132, 255, 0.1);
 }
 
 .titleCardTop {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .proposerTag {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--orbit-text-muted);
 }
 
 .titleDesc {
   margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--orbit-text);
 }
 
@@ -154,18 +523,61 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-top: 4px;
 }
 
 .titleProgress {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--orbit-text-muted);
 }
 
-@media (max-width: 980px) {
-  .twoCol,
-  .metricGrid,
-  .titlesGrid {
+.historyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--orbit-surface-strong);
+  border: 1px solid var(--orbit-border);
+}
+
+.historyTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.historyWeek {
+  font-family: var(--orbit-mono);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--orbit-text);
+}
+
+.historyMeta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--orbit-text-muted);
+
+  strong {
+    font-size: 13.5px;
+    color: var(--orbit-text);
+  }
+}
+
+@media (max-width: 1100px) {
+  .kpiStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 920px) {
+  .bentoGrid {
     grid-template-columns: 1fr;
+  }
+  .sideDrawer {
+    width: 310px;
   }
 }
