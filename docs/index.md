@@ -29,9 +29,9 @@ features:
   - icon: 🛡️
     title: 强隔离安全沙箱
     details: 每个应用独占 persist:orbit-app-<appId> 存储分区与最小权限 Preload，绝不共享 Orbit 主认证 Cookie，同时提供严格 CSP 与外链拦截。
-  - icon: ☁️
-    title: 零运维托管云存档
-    details: 通过 window.orbitSDK.storage 一行代码读写跨设备漫游的云端 KV 存档（单应用单人 1MB 配额），开发工具与小游戏无需自建后端。
+  - icon: 🌐
+    title: 零后端云存档与多人联机
+    details: 内置 Nakama 游戏联机 BaaS（SSO 一键换票、实时房间、自动匹配与排行榜）与跨设备云端 KV 存档（单应用单人 1MB），开发联机小游戏无需自建后端。
   - icon: 🚀
     title: 本地热重载调试台
     details: 在 Orbit「工坊 → 本地调试」直接挂载本地构建目录（Cocos/Unity/Godot）或 localhost 开发服务器，附带独立 Chromium DevTools。

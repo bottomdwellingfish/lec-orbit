@@ -60,6 +60,7 @@ describe('miniapp protocolHeaders (Cocos / Unity / Godot compatibility)', () => 
     expect(docHeaders['Cross-Origin-Embedder-Policy']).toBe('credentialless');
     expect(docHeaders['Content-Security-Policy']).toContain("'wasm-unsafe-eval'");
     expect(docHeaders['Content-Security-Policy']).toContain('https://api.example.com');
+    expect(docHeaders['Content-Security-Policy']).toContain('wss://api.example.com');
     expect(docHeaders['Content-Security-Policy']).toContain("object-src 'none'");
 
     const nonIsoManifest = OrbitAppManifestSchema.parse({

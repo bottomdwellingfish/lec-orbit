@@ -44,8 +44,8 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `permissions.scopes` | `Array<'user.profile' \| 'storage.cloud' \| 'clipboard'>` | `["user.profile", "storage.cloud"]` | 声明需要调用的 `window.orbitSDK` 能力范围；未声明的敏感 API 会被主进程直接拒绝 |
-| `permissions.networkDomains` | `string[]` | `[]` | 允许通过 `fetch` / `WebSocket` 访问的外部域名白名单（最多 16 个），例如 `["api.github.com"]` |
+| `permissions.scopes` | `Array<'user.profile' \| 'storage.cloud' \| 'clipboard' \| 'economy.read' \| 'economy.wager.coin' \| 'economy.wager.punch' \| 'economy.tip'>` | `["user.profile", "storage.cloud"]` | 声明需要调用的 `window.orbitSDK` 能力范围；未声明的敏感 API 会被主进程直接拒绝 |
+| `permissions.networkDomains` | `string[]` | `[]` | 允许通过 `fetch` / `WebSocket` 访问的外部域名白名单（最多 16 个），例如 `["api.github.com"]`。**若使用内置 Nakama 多人联机，请务必添加 `"orbit.lecspace.top"`** |
 
 ## 推荐配置模板
 

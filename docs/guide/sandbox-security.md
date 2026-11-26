@@ -19,6 +19,8 @@ Orbit 客户端保存着工作室成员的 **LecSSO 刷新令牌、全机免密�
   - `user.profile`：读取当前成员脱敏档案（仅 `userId / username / displayName / avatar / isAdmin`，绝不下发任何主 Access Token）。
   - `storage.cloud`：读写当前应用专属的云端 KV 存档。
   - `clipboard`：写入系统剪贴板。
+  - `economy.*`：查询乐币/打卡时长余额（`economy.read`）、发起受控对赌（`economy.wager.coin` / `economy.wager.punch`）或打赏（`economy.tip`），敏感扣款由主进程弹出原生二次确认框。
+- **内置 Nakama 多人联机安全隔离**：`multiplayer.getNakamaSession()` 由 Orbit 服务端使用集群内网私有 `Server Key` 代签短期 Nakama JWT，小游戏前端永远无法触碰主认证 Token 或 Nakama 服务端密钥。
 - 浏览器硬件权限默认只放行游戏必需的 `pointerLock` 与 `fullscreen`，默认拒绝摄像头、麦克风与精确地理位置请求。
 
 ### 4. 内容安全策略（CSP）与外域拦截
@@ -37,8 +39,10 @@ object-src 'none';
 base-uri 'self';
 ```
 
-::: warning 注意外部网络请求
-如果你的小程序需要通过 `fetch` 或 `WebSocket` 请求某个外部接口，必须把该域名登记在 `permissions.networkDomains` 中（例如 `["api.example.com"]`），否则会被浏览器 CSP 拦截！审核上架时队长也会核对声明的外域清单。
+::: warning 注意外部网络请求与 Nakama 联机
+如果你的小程序或小游戏需要通过 `fetch` 或 `WebSocket` 请求外部接口，必须把目标域名登记在 `permissions.networkDomains` 中（容器会自动同时放行该域名的 `https://` 与 `wss://` 连接），否则会被浏览器 CSP 拦截！
+- 使用内置 **Nakama 多人联机 BaaS** 时，请添加 `"orbit.lecspace.top"`；
+- 审核上架时队长会核对声明的外域清单。
 :::
 
 ### 5. 导航与外链安全

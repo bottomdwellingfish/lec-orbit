@@ -136,6 +136,7 @@ hello-orbit/
 
 ::: tip 接下来看什么？
 - 查阅完整的 [`orbit.manifest.json` 规范](/guide/manifest)
+- 想做实时多人联机小游戏（免自建后端）：查看 [多人联机指南（Nakama BaaS）](/guide/multiplayer)
 - 根据你使用的技术栈直接跳转：
   - [小程序（Web / React / Liquid Glass）](/engines/miniapp-web)
   - [Cocos Creator 3.x 接入指南](/engines/cocos)

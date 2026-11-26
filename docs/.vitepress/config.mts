@@ -59,6 +59,7 @@ export default defineConfig({
         text: 'SDK 与容器能力',
         items: [
           { text: 'window.orbitSDK API 参考', link: '/api/orbit-sdk' },
+          { text: '多人联机（Nakama BaaS）', link: '/guide/multiplayer' },
         ],
       },
       {
