@@ -74,6 +74,7 @@ export const PUNCH_ENDPOINTS = {
   attendanceCurrent: '/attendance/current',
   checkIn: '/attendance/check-in',
   checkOut: '/attendance/check-out',
+  keepAlive: '/attendance/keepalive',
   teamActive: '/attendance/team-active',
   networkStatus: '/network-policy/current-status',
   adminWifiFingerprint: '/network-policy/admin/wifi-fingerprint',
@@ -272,6 +273,63 @@ export const punchApi = {
       throw err;
     }
     return this.fetchAttendance();
+  },
+
+  async sendAttendanceKeepAlive(forceWifiScan = true): Promise<{
+    elapsedSeconds: number;
+    environment?: NetworkPolicyStatus;
+  }> {
+    const scan = await collectWifiScanForApi(forceWifiScan);
+    const { data } = await client.post<{
+      elapsedSeconds?: number;
+      environment?: {
+        isAllowed?: boolean;
+        allowed?: boolean;
+        ipAllowed?: boolean;
+        clientIp?: string;
+        reason?: string;
+        wifiFingerprintEnabled?: boolean;
+        wifiAllowed?: boolean;
+        matchedCount?: number;
+        requiredMatchCount?: number;
+        configuredAnchorCount?: number;
+      };
+    }>(
+      PUNCH_ENDPOINTS.keepAlive,
+      scan.samples.length > 0 ? { wifiScan: scan.samples } : {},
+    );
+
+    let environment: NetworkPolicyStatus | undefined;
+    if (data.environment) {
+      const env = data.environment;
+      const allowed = Boolean(env.isAllowed ?? env.allowed);
+      const wifiFingerprintEnabled = Boolean(env.wifiFingerprintEnabled);
+      environment = {
+        allowed,
+        ipAllowed: typeof env.ipAllowed === 'boolean' ? env.ipAllowed : allowed,
+        clientIp: env.clientIp,
+        reason:
+          env.reason ||
+          (allowed
+            ? undefined
+            : wifiFingerprintEnabled
+              ? scan.error || '未识别到工作室周边 Wi-Fi 环境指纹。'
+              : '当前出口网络未在工作室考勤白名单中。'),
+        wifiFingerprintEnabled,
+        wifiAllowed: typeof env.wifiAllowed === 'boolean' ? env.wifiAllowed : allowed,
+        matchedCount: typeof env.matchedCount === 'number' ? env.matchedCount : 0,
+        requiredMatchCount: typeof env.requiredMatchCount === 'number' ? env.requiredMatchCount : 0,
+        configuredAnchorCount:
+          typeof env.configuredAnchorCount === 'number' ? env.configuredAnchorCount : 0,
+        scanError: scan.samples.length === 0 ? scan.error : undefined,
+        scanPermissionDenied: scan.samples.length === 0 ? scan.permissionDenied : undefined,
+      };
+    }
+
+    return {
+      elapsedSeconds: Number(data.elapsedSeconds ?? 0),
+      environment,
+    };
   },
 
   async fetchNetworkStatus(forceWifiScan = false): Promise<NetworkPolicyStatus> {

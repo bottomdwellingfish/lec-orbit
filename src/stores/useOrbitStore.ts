@@ -157,6 +157,7 @@ interface OrbitStoreState {
   setCardGame: (game: CardGameView) => void;
   refreshOrbitCenter: () => Promise<void>;
   syncStaleData: (minIntervalMs?: number) => void;
+  sendAttendanceHeartbeat: () => Promise<void>;
   applyOrbitWsEvent: (event: OrbitWsEvent) => void;
   toggleCheckInOut: () => Promise<{ ok: boolean; message: string; status?: number }>;
   equipTitle: (titleId: string | null) => Promise<void>;
@@ -185,6 +186,9 @@ const initialDoc: DocViewState = {
 let lastPunchSyncAt = 0;
 let lastOrbitSyncAt = 0;
 let lastCardSyncAt = 0;
+let consecutiveEnvMisses = 0;
+let lastEnvLeaveNotifiedAt = 0;
+let heartbeatInFlight = false;
 let blogsRequestId = 0;
 let blogConfigInFlight: Promise<BlogPublicConfig | null> | null = null;
 const MEMBER_BLOG_CACHE = 'blogs:members';
@@ -730,6 +734,8 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     }
     try {
       const updated = isCheckedIn ? await punchApi.checkOut() : await punchApi.checkIn();
+      consecutiveEnvMisses = 0;
+      lastEnvLeaveNotifiedAt = 0;
       set({ attendance: updated });
       void getOrbitClient().storage.setCache('punch:attendance', updated);
       void get().refreshPunchData();
@@ -790,6 +796,72 @@ export const useOrbitStore = create<OrbitStoreState>((set, get) => ({
     }
     if (now - lastOrbitSyncAt >= minIntervalMs) {
       void get().refreshOrbitCenter();
+    }
+  },
+
+  sendAttendanceHeartbeat: async () => {
+    const state = get();
+    if (!state.auth.authenticated || !state.attendance?.isCheckedIn || heartbeatInFlight) return;
+    heartbeatInFlight = true;
+    try {
+      const res = await punchApi.sendAttendanceKeepAlive(true);
+      const latest = get();
+      if (!latest.attendance?.isCheckedIn) return;
+
+      const nextAttendance: AttendanceSnapshot = {
+        ...latest.attendance,
+        currentSessionSeconds: res.elapsedSeconds || latest.attendance.currentSessionSeconds,
+      };
+      const nextNetwork = res.environment ?? latest.networkStatus;
+
+      set({
+        attendance: nextAttendance,
+        ...(res.environment ? { networkStatus: res.environment } : {}),
+      });
+      void getOrbitClient().storage.setCache('punch:attendance', nextAttendance);
+      void getOrbitClient().system.updateTrayPunch({
+        checkedIn: true,
+        elapsedSeconds: nextAttendance.currentSessionSeconds ?? 0,
+        todaySeconds: nextAttendance.todayDurationSeconds ?? 0,
+        weekSeconds: latest.weeklyStats?.totalDurationSeconds ?? nextAttendance.weekDurationSeconds ?? 0,
+        weekTargetSeconds:
+          latest.weeklyStats?.targetDurationSeconds ?? nextAttendance.weekTargetSeconds ?? 18 * 3600,
+        networkAllowed: nextNetwork ? nextNetwork.allowed : true,
+        authenticated: true,
+        statusLabel: '专注中',
+      });
+
+      if (res.environment?.wifiFingerprintEnabled) {
+        if (res.environment.allowed) {
+          consecutiveEnvMisses = 0;
+        } else {
+          consecutiveEnvMisses += 1;
+          const now = Date.now();
+          // 连续 2 次心跳（约 6 分钟）均未命中工作室环境时提醒签退，避免单次 Wi-Fi 波动误报，且至少间隔 15 分钟提醒一次
+          if (consecutiveEnvMisses >= 2 && now - lastEnvLeaveNotifiedAt >= 15 * 60_000) {
+            lastEnvLeaveNotifiedAt = now;
+            const title = '未检测到工作室环境';
+            const body =
+              res.environment.scanError ||
+              res.environment.reason ||
+              '连续多次未检测到工作室周边 Wi-Fi 信号，若已离开工作室请记得及时签退。';
+            void getOrbitClient().system.notify(title, body);
+            notifyToast({
+              tone: 'info',
+              title,
+              description: body,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      // 若服务端已签退或满 5 小时自动失效（400），立即刷新考勤状态同步托盘与计时器
+      if (err instanceof PunchApiError && err.status === 400) {
+        consecutiveEnvMisses = 0;
+        void get().refreshPunchData();
+      }
+    } finally {
+      heartbeatInFlight = false;
     }
   },
 

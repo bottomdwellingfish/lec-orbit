@@ -98,6 +98,8 @@ export function App(): JSX.Element {
   const toggleCheckInOut = useOrbitStore((s) => s.toggleCheckInOut);
   const applyOrbitWsEvent = useOrbitStore((s) => s.applyOrbitWsEvent);
   const syncStaleData = useOrbitStore((s) => s.syncStaleData);
+  const sendAttendanceHeartbeat = useOrbitStore((s) => s.sendAttendanceHeartbeat);
+  const isCheckedIn = useOrbitStore((s) => Boolean(s.attendance?.isCheckedIn));
   const updateConfig = useOrbitStore((s) => s.updateConfig);
 
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -279,6 +281,19 @@ export function App(): JSX.Element {
       window.clearInterval(timer);
     };
   }, [isFloatingBall, auth.authenticated, syncStaleData]);
+
+  // 打卡中后台心跳：每 3 分钟自动上报 /attendance/keepalive（含周边 Wi-Fi 指纹），
+  // 即使窗口最小化到托盘也持续校对在线状态、防 5 小时超时不同步并检测是否离开工作室环境
+  useEffect(() => {
+    if (isAuxiliaryWindow || !auth.authenticated || !isCheckedIn) return;
+    const HEARTBEAT_INTERVAL_MS = 3 * 60_000;
+    const timer = window.setInterval(() => {
+      void sendAttendanceHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isAuxiliaryWindow, auth.authenticated, isCheckedIn, sendAttendanceHeartbeat]);
 
   // 专注提醒真实定时引擎：连续专注 2h 休息、4h15m / 4h45m 防超 5 小时上限签退、周末考核冲刺提醒
   useEffect(() => {
