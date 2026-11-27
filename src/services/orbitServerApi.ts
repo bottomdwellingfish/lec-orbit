@@ -2,6 +2,7 @@
 import axios, { AxiosError } from 'axios';
 import { getOrbitEndpoints } from '@shared/env';
 import type { MiniAppCatalogItem, MiniAppDetail, OrbitAppManifest } from '@shared/miniapp';
+import type { DutySchedule } from '@shared/duty';
 import { getOrbitClient } from './orbitClient';
 
 export interface OrbitAnnouncement {
@@ -215,6 +216,12 @@ client.interceptors.response.use(
 );
 
 export const orbitServerApi = {
+  async getDutySchedule(): Promise<DutySchedule> {
+    return (await client.get<DutySchedule>('/api/v1/duty-schedule')).data;
+  },
+  async saveDutySchedule(groups: string[][]): Promise<void> {
+    await client.put('/api/v1/duty-schedule', { groups });
+  },
   async listAnnouncements(): Promise<OrbitAnnouncement[]> {
     const { data } = await client.get<{ items: OrbitAnnouncement[] }>('/api/v1/announcements');
     return data.items ?? [];
