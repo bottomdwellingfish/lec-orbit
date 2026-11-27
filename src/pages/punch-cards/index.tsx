@@ -369,9 +369,6 @@ export function PunchCardsPage(): JSX.Element {
                 </strong>
                 <span className={styles.statHint}>
                   免费 {game.freeRemaining} 次 · 赠礼 {game.giftDraws} 次
-                  {typeof game.weeklyPaidDrawsLimit === 'number'
-                    ? ` · 付费已用 ${game.weeklyPaidDrawsUsed ?? 0}/${game.weeklyPaidDrawsLimit}`
-                    : ''}
                 </span>
               </div>
               <div className={styles.statBlock}>
