@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'bun:test';
 import { DataSource } from 'typeorm';
-import { AddDutySchedule1764900000000 } from '../src/database/migrations/1764900000000-AddDutySchedule.js';
+import { AddDutySchedule1764800000000 } from '../src/database/migrations/1764800000000-AddDutySchedule.js';
 import { DutyController } from '../src/modules/roster/duty.controller.js';
 import type { AuthUser } from '../src/modules/auth/auth.types.js';
 import type { AppConfig } from '../src/config/env.config.js';
@@ -27,7 +27,7 @@ test.skipIf(!process.env.DUTY_TEST_DB_URL)('并发创建、修改与清空均拒
   try {
     const [{ exists }] = await db.query("SELECT to_regclass('orbit_duty_schedule') IS NOT NULL AS exists");
     if (exists) throw new Error('测试需要全新的空数据库');
-    await new AddDutySchedule1764900000000().up(runner);
+    await new AddDutySchedule1764800000000().up(runner);
     const api = new DutyController(db, { ssoOrgId: 'studio' } as AppConfig);
     const user = { roles: ['captain'], isStudio: true } as AuthUser;
     const race = async (version: string | null) => {
