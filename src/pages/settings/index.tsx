@@ -28,6 +28,7 @@ import { useOrbitStore } from '@/stores/useOrbitStore';
 import { SocialBindingsCard } from './SocialBindingsCard';
 import { WifiFingerprintCard } from './WifiFingerprintCard';
 import { DutyScheduleCard } from './DutyScheduleCard';
+import { hasStudioRole } from '@shared/studioRole';
 import styles from './Settings.module.css';
 
 export function SettingsPage(): JSX.Element {
@@ -355,8 +356,8 @@ export function SettingsPage(): JSX.Element {
       </Card>
 
       {auth.authenticated && auth.isAdmin && <WifiFingerprintCard />}
-      {auth.authenticated && auth.isStudioMember && auth.profile?.organizationRoles.some(raw =>
-        ['captain', 'lec-captain'].some(role => raw === role || raw === `${endpoints.ssoOrganizationId}:${role}`)
+      {auth.authenticated && auth.isStudioMember && auth.profile && hasStudioRole(
+        auth.profile.organizationRoles, endpoints.ssoOrganizationId, ['captain', 'lec-captain'],
       ) && <DutyScheduleCard key={auth.profile.subject} />}
 
       <Card title="本地存储与版本">

@@ -26,6 +26,7 @@ import { useOrbitStore } from '@/stores/useOrbitStore';
 import styles from './PunchToday.module.css';
 import { dutyWeek, type DutySchedule } from '@shared/duty';
 import { orbitServerApi } from '@/services/orbitServerApi';
+import { dutyRefreshFailure } from '@/services/dutySync';
 
 const GlyphEmber = lazy(() => import('./GlyphEmber'));
 
@@ -65,15 +66,14 @@ export function PunchTodayPage(): JSX.Element {
   const setLoginModalOpen = useOrbitStore((s) => s.setLoginModalOpen);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [schedule, setSchedule] = useState<DutySchedule | null>(null);
-  const [dutyFailed, setDutyFailed] = useState(false);
+  const [{ schedule, message: dutyMessage }, setDuty] = useState<{ schedule: DutySchedule | null; message: string }>({ schedule: null, message: '' });
   useEffect(() => {
-    setSchedule(null); setDutyFailed(false);
+    setDuty({ schedule: null, message: '' });
     if (!auth.authenticated || !auth.isStudioMember) return;
     let active = true;
     const load = () => orbitServerApi.getDutySchedule().then(next => {
-      if (active) { setSchedule(next); setDutyFailed(false); }
-    }).catch(() => { if (active) setDutyFailed(true); });
+      if (active) setDuty({ schedule: next, message: '' });
+    }).catch(error => { if (active) setDuty(prev => dutyRefreshFailure(prev.schedule, error)); });
     void load();
     const timer = window.setInterval(load, 60_000);
     return () => { active = false; window.clearInterval(timer); };
@@ -447,8 +447,9 @@ export function PunchTodayPage(): JSX.Element {
         <div className={styles.dutyRow}>
           <strong className={styles.sectionTitle}><IdCard size={16} /> 本周值日生</strong>
           <span>{!auth.authenticated ? '登录后查看值日安排' : !auth.isStudioMember ? '仅工作室成员可查看'
-            : dutyFailed ? '排班同步失败，稍后自动重试' : !schedule ? '正在读取排班…' : duty.index < 0 ? '本周暂未安排值日生'
+            : !schedule ? (dutyMessage || '正在读取排班…') : duty.index < 0 ? '本周暂未安排值日生'
             : `第 ${duty.index + 1} 组 · ${schedule.groups[duty.index].join('、')}`}</span>
+          {auth.authenticated && auth.isStudioMember && schedule && dutyMessage && <small role="status">{dutyMessage}</small>}
           <span className={styles.dutyDates}>{duty.dates}</span>
         </div>
       </Card>
